@@ -385,3 +385,30 @@ export function getSectionRaw(buf: Buffer, s: PeSection): Buffer | null {
   if (s.rawSize === 0 || s.rawPointer + s.rawSize > buf.length) return null;
   return buf.subarray(s.rawPointer, s.rawPointer + s.rawSize);
 }
+
+/**
+ * Bolum tablosundan RVA -> dosya offseti eslemesi (parsePe icindeki
+ * rvaToOffset ile ayni semantik; buffer olmadan da kullanilabilir).
+ * - basliklar icindeyse RVA dogrudan offsettir
+ * - hicbir bolume dusmuyorsa -1 doner (cagiran sessizce atlar)
+ */
+export function rvaToFileOffset(
+  rva: number,
+  sections: PeSection[],
+  sizeOfHeaders?: number,
+  fileSize?: number,
+): number {
+  if (!Number.isFinite(rva) || rva < 0) return -1;
+  if (sizeOfHeaders !== undefined && rva < sizeOfHeaders) return rva;
+  for (const s of sections) {
+    const span = Math.max(s.virtualSize, s.rawSize);
+    if (rva >= s.virtualAddress && rva < s.virtualAddress + span) {
+      // bolumun diskte karsiligi yoksa (BSS tarzi rawSize=0) esleme gecersizdir
+      if (s.rawSize === 0) return -1;
+      const off = rva - s.virtualAddress + s.rawPointer;
+      if (fileSize !== undefined && off >= fileSize) return -1;
+      return off;
+    }
+  }
+  return -1;
+}

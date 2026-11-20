@@ -2,12 +2,18 @@
 // DumperPro Online - semantik aciklama motoru (Turkce tahmin motoru)
 //
 // Cikarilan verinin NE IS YAPTIGINI tahmin eder: fonksiyon adi/etiketi,
-// string icerikleri, struct alan adlari ve enum uye adlari ~650 anahtar
+// string icerikleri, struct alan adlari ve enum uye adlari ~1100 anahtar
 // kelime sozlugu uzerinden 23 oyun kategorisine skorlanir (Saglik, Silah/
 // Hasar, Ekonomi/Para, Konum/Koordinat ...). Skorlama: tam eslesme > onek >
 // icerme; birden fazla kategori eslesirse en yuksek skor kazanir, digerleri
 // tags alanina yazilir. Tum aciklamalar TAHMINIDIR (confidence 0..1) ve
 // kesin dogrulama canli modda yapilmalidir.
+//
+// Kategori meta tablosu (CATEGORY_META) her kategori icin Turkce aciklama
+// tutar: ne is yapiyor / ne hesapliyor / nereye yaziyor-etkiliyor. SemanticInfo
+// uzerindeki categoryId (EN kimlik), description (kisa TR aciklama) ve hints
+// (action/computation/target) alanlari bu tablodan doldurulur; eski alanlar
+// (category/computes/writes) geriye uyumlu sekilde aynen korunur.
 //
 // Dekor temizligi: MSVC "?updateHealth@Player@@QEAAXH@Z" -> "updateHealth",
 // Itanium "_ZN7Player12updateHealthEi" -> "updateHealth", JNI "Java_..." ->
@@ -23,11 +29,21 @@ import type { FunctionEntry, RecoveredEnum, RecoveredStruct } from "./types";
 
 export interface SemanticInfo {
   category: string; // baskin kategori (TR)
+  categoryId: string; // makine okur EN kimlik (health, weapon_damage, ...)
   confidence: number; // 0..1 (eslesme sayisi + pozisyonu)
   summary: string; // kisa Turkce ozet cumlesi
   computes: string; // ne hesaplar/okur (eslesen anahtar kelimeler)
   writes: string; // nereye yazar (kategori bazli tahmin)
+  description: string; // kategori bazli kisa TR aciklama (ne is/hesap/yazim)
+  hints: SemanticHints; // eylem/hesap/hedef ipuclari (yeni alanlar)
   tags: string[]; // ikincil kategoriler + ozel etiketler (platform vb.)
+}
+
+/** Yeni ipucu alanlari: eylem / hesap / hedef (UI'da ayri satirlarda gosterilir). */
+export interface SemanticHints {
+  action: string; // ne is yapiyor (fiil tabanli tahmin)
+  computation: string; // ne hesapliyor/okuyor
+  target: string; // nereye yaziyor/etkiliyor
 }
 
 // ---------------------------------------------------------------------------
@@ -94,145 +110,472 @@ const C = {
 
 const DICT_GROUPS: [string, string[]][] = [
   [C.SAGLIK, [
+    // can/HP/mana/stat/regen/olum - karakter saglik domani
     "health", "can", "hp", "life", "heal", "healing", "stamina", "mana", "armor", "regen",
     "invincible", "invulnerable", "immortal", "godmode", "player", "character", "pawn",
     "avatar", "karakter", "oyuncu", "playerstate", "alive", "dead", "death", "kill",
     "suicide", "revive", "hunger", "thirst", "oxygen", "fatigue", "sanity", "morale",
-    "bleed", "poison",
+    "bleed", "poison", "maxhealth", "maxhp", "healthmax", "currenthealth", "hitpoint",
+    "hitpoints", "vitality", "lifepool", "hpregen", "manapool", "maxmana", "manaregen",
+    "shield", "shielding", "barrier", "ward", "defense", "defence", "resist", "resistance",
+    "immunity", "immune", "cure", "curing", "bandage", "medkit", "firstaid", "potion",
+    "elixir", "tonic", "syringe", "adrenaline", "stim", "injury", "wounded", "damageable",
+    "mortal", "resurrection", "resurrect", "lives", "respawn", "downed", "knocked",
+    "knockdown", "incapacitated", "regeneration", "regenerating", "lifesteal", "vampirism",
+    "affliction", "ailment", "buff", "debuff", "sick", "disease", "infection", "starvation",
+    "hydration", "breath", "suffocate", "drown", "drowning", "burning", "frostbite",
+    "hypothermia", "blood", "bloodpool", "soul", "essence", "isdead", "isalive", "killcount",
+    "friendlyfire", "hero", "protagonist", "secondwind", "healrate", "healingrate",
+    "staminamax", "staminaregen", "energymax", "energy", "condition", "bodytemp",
   ]],
   [C.SILAH, [
+    // hasar/ates/silah - silah domani
     "damage", "hasar", "atk", "attack", "dps", "ammo", "mermi", "magazine", "mag", "clip",
     "weapon", "silah", "gun", "rifle", "pistol", "bullet", "fire", "firerate", "reload",
     "shoot", "recoil", "spread", "crit", "critical", "melee", "grenade", "explosive",
     "bomb", "projectile", "muzzle", "caliber", "aim", "hit", "pierce", "range", "cannon",
-    "shooter",
+    "shooter", "maxdamage", "mindamage", "damageperhit", "attackpower", "attackdamage",
+    "attackrange", "attackspeed", "shooting", "firing", "firemode", "burst", "autofire",
+    "singlefire", "trigger", "ammunition", "ammopool", "reserveammo", "ammoreserve",
+    "reloading", "reloadtime", "shot", "shots", "shotcount", "bulletcount", "bulletspeed",
+    "muzzlevelocity", "muzzleflash", "ballistic", "ballistics", "trajectory", "tracer",
+    "hitmarker", "headshot", "bodyshot", "limb", "armorpen", "armorpenetration",
+    "penetration", "explosion", "blast", "blastradius", "radiusdamage", "splash",
+    "splashdamage", "detonate", "detonation", "fuse", "throwable", "crossbow", "bow",
+    "arrow", "quiver", "shotgun", "smg", "lmg", "sniper", "carbine", "launcher", "rocket",
+    "missile", "mortar", "flamethrower", "napalm", "blade", "sword", "katana", "dagger",
+    "knife", "axe", "hammer", "spear", "stab", "slash", "sharpness", "enchant",
+    "attachment", "scope", "optic", "suppressor", "silencer", "clipsize", "magsize",
+    "ammocapacity", "overheat", "overheating", "chargedshot", "chargeup", "combo",
+    "hitstun", "parry", "riposte", "feint", "counterattack", "gunfire", "gunshot",
+    "ricochet", "multishot", "critchance", "critdamage", "critmultiplier", "wound",
   ]],
   [C.ENVANTER, [
+    // esya/slot/kaynak - envanter domani
     "inventory", "item", "items", "slot", "envanter", "loot", "bag", "backpack", "stash",
     "equip", "gear", "pickup", "drop", "craft", "recipe", "chest", "crate", "container",
     "quantity", "stack", "consumable", "pouch", "holster", "relic", "artifact", "weight",
-    "cargo",
+    "cargo", "inventoryslot", "slotcount", "itemcount", "itemid", "itemtype", "itemdef",
+    "itemclass", "itemrarity", "rarity", "legendary", "epic", "uncommon", "drops",
+    "droprate", "dropchance", "looting", "lootbox", "lootcrate", "lootable", "grounditem",
+    "worlditem", "warehouse", "sack", "satchel", "equipped", "equipable", "equipping",
+    "unequip", "wearable", "wearing", "carried", "carry", "carryweight", "encumbrance",
+    "loadout", "kit", "gearset", "equipment", "materials", "resource", "resources",
+    "ingot", "component", "components", "ingredient", "ingredients", "crafting",
+    "craftable", "blueprint", "schematic", "workbench", "forge", "smelter", "smithing",
+    "salvage", "scrap", "repairkit", "durability", "usable", "usecount", "charges",
+    "itemlevel", "itemskin", "itemname", "items", "stackcount", "stacksize", "maxstack",
+    "inventorygrid", "hotbar", "quickslot", "belt", "vault", "collectionbin", "transfer",
   ]],
   [C.EKONOMI, [
+    // para/magaza/ticaret - ekonomi domani
     "money", "gold", "coin", "para", "cash", "credit", "credits", "bakiye", "currency",
     "wallet", "price", "shop", "store", "sell", "buy", "purchase", "trade", "payment",
     "transaction", "balance", "bank", "diamond", "gem", "premium", "donate", "salary",
-    "revenue", "income", "tax", "iap", "microtransaction", "cashout",
+    "revenue", "income", "tax", "iap", "microtransaction", "cashout", "coins", "goldcoin",
+    "silver", "copper", "bronze", "gems", "jewels", "tokens", "pointshop", "storeitem",
+    "shopitem", "shopkeeper", "merchant", "vendor", "market", "marketplace", "auction",
+    "bid", "economy", "economic", "spend", "spending", "expense", "cost", "pricing",
+    "discount", "sale", "profit", "earning", "earnings", "wage", "fund", "funds",
+    "treasury", "deposit", "withdraw", "withdrawal", "loan", "debt", "interest",
+    "invest", "investment", "cashregister", "receipt", "invoice", "billing",
+    "subscription", "membership", "vip", "battlepoints", "arcadepoints", "currencies",
+    "moneybag", "casino", "bet", "betting", "gamble", "gambling", "jackpot", "lottery",
+    "wager", "poker", "blackjack", "roulette", "slotmachine", "payday", "paywall",
+    "walletbalance", "totalprice", "unitprice", "itemprice", "sellprice", "buyprice",
+    "refund", "refunding", "purchasable", "tradable", "trading", "barter", "swapfee",
   ]],
   [C.ILERLEME, [
+    // seviye/xp/odul - ilerleme domani
     "level", "xp", "exp", "experience", "seviye", "rank", "ranking", "skill", "prestige",
     "quest", "mission", "achievement", "unlock", "progress", "score", "points",
     "reputation", "badge", "talent", "perk", "upgrade", "tier", "league", "rating", "mmr",
-    "elo", "leaderboard", "battlepass", "mastery", "levelup",
+    "elo", "leaderboard", "battlepass", "mastery", "levelup", "levels", "levelcap",
+    "maxlevel", "xpamount", "xpneeded", "xpreward", "exppoints", "levelsystem",
+    "skillpoints", "skilltree", "skilllevel", "attribute", "attributes", "stat",
+    "stats", "statpoints", "boost", "booster", "boosters", "progression", "progressing",
+    "leveling", "rankup", "ranked", "rankpoints", "ranks", "division", "seasonreward",
+    "reward", "rewards", "rewardtable", "unlockable", "unlocks", "challenge",
+    "challenges", "achievementpoints", "trophy", "trophies", "medal", "medals", "ribbon",
+    "questlog", "quests", "queststate", "questgiver", "objective", "objectives",
+    "completed", "completion", "completionrate", "prestigelevel", "paragon",
+    "ascension", "awakening", "evolve", "evolution", "evolved", "career", "careerlevel",
+    "accountlevel", "accountxp", "profilelevel", "collectible", "collection", "collect",
+    "collected", "explevel", "xpcurve", "xpbonus", "perkpoints", "talentpoints",
+    "upgradelevel", "upgrades", "upgraded", "milestone", "milestones", "dailyquest",
+    "weeklyquest", "seasonlevel", "passxp", "rankedpoints",
   ]],
   [C.KONUM, [
+    // pozisyon/transform/xyz - konum domani
     "position", "pos", "location", "coordinate", "coords", "konum", "origin", "waypoint",
     "marker", "gps", "compass", "map", "worldmap", "zone", "area", "region", "chunk",
     "tile", "sector", "spawnpoint", "teleport", "latitude", "longitude", "altitude",
     "heading", "rotation", "yaw", "pitch", "transform", "world", "distance", "radius",
-    "bounds", "quadrant",
+    "bounds", "quadrant", "posx", "posy", "posz", "xposition", "yposition", "zposition",
+    "worldpos", "worldposition", "localpos", "localposition", "relativeposition",
+    "coordinates", "coord", "gridpos", "cell", "cellx", "celly", "mapmarker", "locator",
+    "zoneid", "zones", "areaid", "regionid", "biome", "biomes", "terrain", "landscape",
+    "landmark", "landmarks", "portal", "portals", "fasttravel", "travel", "traveling",
+    "spawner", "spawnlocation", "spawnzone", "boundingbox", "aabb", "extent", "extents",
+    "dimension", "dimensions", "scale", "scalex", "scaley", "scalez", "quaternion",
+    "quat", "euler", "eulerangle", "eulerangles", "matrix", "translate", "translation",
+    "rotate", "rotator", "facing", "direction", "dir", "bearing", "azimuth", "elevation",
+    "depth", "xyz", "rootlocation", "actorlocation", "getlocation", "setlocation",
+    "navpoint", "homingpoint", "travelnode", "sectorid", "zonebounds", "mapbounds",
   ]],
   [C.HAREKET, [
+    // hiz/ivme/fizik/ carpisma - hareket domani
     "velocity", "speed", "hiz", "move", "movement", "jump", "dash", "gravity", "physic",
     "physics", "momentum", "acceleration", "accel", "friction", "bounce", "ragdoll",
     "collision", "collider", "hitbox", "swim", "climb", "sprint", "walk", "run", "fall",
     "falling", "parachute", "glide", "roll", "dodge", "impulse", "force", "torque",
-    "mass", "knockback", "slide", "crouch", "lean",
+    "mass", "knockback", "slide", "crouch", "lean", "maxspeed", "movespeed", "walkspeed",
+    "runspeed", "sprintspeed", "jumpspeed", "jumpforce", "jumpheight", "doublejump",
+    "walljump", "ladder", "ladderclimb", "vault", "mantle", "ledge", "hang", "grab",
+    "swimming", "diving", "buoyancy", "float", "floating", "sinking", "sink",
+    "gravityscale", "gravitation", "terminalvelocity", "freefall", "fallspeed",
+    "landing", "landed", "land", "grounded", "isgrounded", "onground", "groundcheck",
+    "jumping", "crouching", "crouched", "standing", "stand", "prone", "sprinting",
+    "angular", "linearvelocity", "lineardamping", "damping", "drag", "airdrag",
+    "bounciness", "restitution", "elasticity", "rigidbody", "physx", "havok", "chaos",
+    "physicsasset", "collisionprofile", "collisions", "collide", "colliding", "overlap",
+    "sweep", "swept", "raycast", "raycasts", "linetrace", "hitresult", "impact",
+    "impactpoint", "debris", "kinematic", "simulation", "simulate", "constraint",
+    "constraints", "hinge", "joint", "joints", "spring", "pivot", "thrust", "propulsion",
+    "locomotion", "climbing", "sliding", "rolling", "dodging", "dashes", "dashcount",
+    "mobility", "airspeed", "groundspeed",
   ]],
   [C.ARAC, [
+    // surus/yaris/tasit - arac domani
     "car", "vehicle", "wheel", "wheels", "engine", "arac", "araba", "plane", "aircraft",
     "helicopter", "heli", "boat", "ship", "tank", "truck", "bike", "motorcycle", "drift",
     "driving", "driver", "passenger", "chassis", "fuel", "nitro", "steer", "steering",
     "brake", "throttle", "flight", "jet", "submarine", "hover", "garage", "parking",
-    "traffic",
+    "traffic", "cars", "vehicles", "vehiclestate", "vehiclehealth", "enginepower",
+    "horsepower", "rpm", "gear", "gears", "gearbox", "transmission", "clutch", "shifting",
+    "accelerate", "accelerating", "decelerate", "deceleration", "braking", "handbrake",
+    "tire", "tyre", "tires", "tyres", "suspension", "drifting", "grip", "traction",
+    "understeer", "oversteer", "racing", "race", "races", "racetrack", "track", "tracks",
+    "lap", "laps", "laptime", "bestlap", "startline", "finishline", "fuellevel",
+    "fueltank", "gasoline", "petrol", "diesel", "refuel", "refueling", "odometer",
+    "speedometer", "dashboard", "cockpit", "hood", "trunk", "bumper", "spoiler",
+    "fender", "exhaust", "turbo", "nitrous", "siren", "police", "ambulance",
+    "firetruck", "taxi", "bus", "van", "trailer", "caravan", "atv", "snowmobile",
+    "jetski", "yacht", "sail", "sailing", "ferry", "pilot", "piloting", "runway",
+    "takeoff", "airspeed", "autopilot", "wing", "wings", "propeller", "rotor", "train",
+    "locomotive", "railway", "metro", "tram", "wagon", "cart", "carriage", "enginehealth",
+    "vehiclewheels", "drivable", "drivablestate", "vehicleteam",
   ]],
   [C.GORSEL, [
+    // model/mesh/doku/skin/karakter ozellestirme - gorsel domani
     "skin", "skins", "skinid", "model", "mesh", "texture", "tex", "material", "apparel",
     "outfit", "cosmetic", "cloth", "clothing", "hair", "face", "body", "appearance",
     "costume", "color", "tint", "decal", "prop", "wardrobe", "customization", "dye",
-    "palette", "morph",
+    "palette", "morph", "modelid", "models", "meshes", "meshid", "staticmesh", "geometry",
+    "polygon", "uv", "textureid", "texturing", "albedo", "normalmap", "roughness",
+    "metallic", "glossiness", "emissive", "opacity", "transparency", "alpha",
+    "materialinstance", "materialid", "mipmap", "mipmaps", "colors", "colorid", "hue",
+    "saturation", "haircolor", "hairstyle", "beard", "mustache", "eyebrow", "eyes",
+    "eyecolor", "complexion", "scars", "tattoo", "tattoos", "piercing", "makeup",
+    "facial", "facialhair", "head", "torso", "arms", "legs", "hands", "feet", "gloves",
+    "boots", "helmet", "hat", "cap", "shirt", "pants", "jacket", "coat", "dress",
+    "skirt", "shoes", "accessory", "accessories", "jewelry", "necklace", "ring",
+    "earring", "bracelet", "emblem", "logo", "sticker", "stickers", "paintjob", "paint",
+    "livery", "camo", "camouflage", "pattern", "style", "blendshape", "blendshapes",
+    "morphs", "bodytype", "physique", "muscle", "silhouette", "skinnable", "cosmetics",
+    "customize", "customized", "customizer", "outfits", "clothes", "clothphysics",
+    "jacketcolor", "shirtcolor", "viewmodel", "worldmodel", "attachmodel",
   ]],
   [C.ANIMASYON, [
+    // animasyon/iskelet - animasyon domani
     "animation", "anim", "animations", "skeleton", "bone", "bones", "montage", "blend",
     "blendspace", "pose", "rig", "ik", "motion", "animgraph", "emote", "gesture", "dance",
-    "playback", "keyframe", "retarget",
+    "playback", "keyframe", "retarget", "anims", "animinstance", "animbp", "animnotify",
+    "notifies", "animstate", "statemachine", "transition", "blendweight", "additive",
+    "layered", "upperbody", "fullbody", "locomotion", "idle", "hitreact", "hitreaction",
+    "reactions", "stagger", "flinch", "physicalanimation", "boneindex", "bonename",
+    "socket", "sockets", "footik", "rootmotion", "curves", "curve", "timeline",
+    "sequences", "sequence", "sequencer", "playrate", "looping", "loop", "loops",
+    "mirrored", "mirror", "mirroring", "procedural", "motionwarping", "aimoffset",
+    "gestures", "wave", "cheer", "clap", "taunt", "taunts", "dances", "dancing",
+    "emotes", "lipsync", "viseme", "animationblending", "animontage", "poses",
+    "posing", "rigged", "rigging", "skeletonpose", "boneweight", "skinning",
+    "skeletal", "playanim", "stopanim", "animlength", "animtime", "blendposes",
   ]],
   [C.GRAFIK, [
+    // render/shader/golge - grafik domani
     "render", "rendering", "renderer", "shader", "draw", "drawcall", "lighting", "shadow",
     "postprocess", "fps", "frame", "framerate", "graphics", "d3d11", "d3d12", "dx11",
     "dx12", "dxgi", "vulkan", "opengl", "directx", "bloom", "raytracing", "resolution",
     "quality", "vertex", "pixel", "gpu", "rasterizer", "depthstencil", "swapchain",
-    "present", "gamma", "brightness", "antialias", "vram",
+    "present", "gamma", "brightness", "antialias", "vram", "renders", "drawcalls",
+    "instancing", "instanced", "batching", "culling", "occlusion", "backface",
+    "cullmode", "zbuffer", "depthbuffer", "stencilbuffer", "stencil", "shadowmap",
+    "shadows", "castshadow", "light", "lights", "lightmap", "lightprobe",
+    "globalillumination", "illumination", "ambient", "ambientocclusion", "diffuse",
+    "reflection", "reflections", "refraction", "fresnel", "hdr", "tonemapping",
+    "tonemap", "exposure", "colorgrading", "grading", "lut", "vignette",
+    "chromaticaberration", "aberration", "motionblur", "blur", "dof", "depthoffield",
+    "grain", "filmgrain", "lensflare", "godrays", "postfx", "posteffects", "fxaa",
+    "smaa", "taa", "msaa", "antialiasing", "sharpening", "upscale", "upscaling", "dlss",
+    "fsr", "displaymode", "fullscreen", "windowed", "borderless", "vsync", "refreshrate",
+    "vertexbuffer", "indexbuffer", "constantbuffer", "hlsl", "glsl", "spirv",
+    "renderpass", "pipeline", "gbuffer", "deferred", "forward", "lumen", "nanite",
+    "pathtracing", "rtx", "scene", "scenecolor", "shadowquality", "graphicsettings",
+    "graphicquality", "raycastshadows", "renderdistance", "drawdistance", "fogdensity",
   ]],
   [C.KAMERA, [
-    "camera", "kamera", "cam", "viewtarget", "zoom", "shake", "springarm", "boom", "orbit",
-    "cine", "cinematic", "focal", "firstperson", "thirdperson", "pov", "viewport",
-    "lookat", "freelook", "frustum", "fisheye", "freecam",
+    // kamera/gorus - kamera domani
+    "camera", "kamera", "cam", "viewtarget", "zoom", "shake", "springarm", "boom",
+    "orbit", "cine", "cinematic", "focal", "firstperson", "thirdperson", "pov",
+    "viewport", "lookat", "freelook", "frustum", "fisheye", "freecam", "cameras",
+    "cameracomponent", "cameramanager", "maincamera", "editorcamera", "photomode",
+    "replay", "replays", "spectate", "spectating", "spectator", "binocular",
+    "binoculars", "zoomin", "zoomout", "zooming", "zoomed", "fov", "fieldofview",
+    "aspectratio", "aspect", "lens", "aperture", "shutter", "focus", "focused",
+    "focusing", "autofocus", "oscillation", "trauma", "shakes", "shaking",
+    "cameralag", "follow", "following", "panning", "pan", "tilt", "tilting", "dolly",
+    "crane", "headbob", "bobbing", "bob", "sway", "swaying", "perspective",
+    "orthographic", "projection", "projectionmatrix", "viewmatrix", "znear", "zfar",
+    "cutscene", "cutscenes", "camerashake", "camerarig", "cameraarm", "lookinput",
+    "camerapitch", "camerayaw", "cameraroll", "viewpitch", "viewyaw", "eyeh",
+    "photocamera", "replaycam", "spectatorview", "shoulderview", "aimcamera",
   ]],
   [C.HAVA, [
-    "weather", "rain", "sun", "sunny", "snow", "temperature", "wind", "gunbatimi", "hava",
-    "climate", "fog", "storm", "thunder", "lightning", "humidity", "forecast", "sunrise",
-    "sunset", "dusk", "dawn", "moon", "cloud", "tide",
+    // hava durumu/cevre/gun dongusu - hava domani
+    "weather", "rain", "sun", "sunny", "snow", "temperature", "wind", "gunbatimi",
+    "hava", "climate", "fog", "storm", "thunder", "lightning", "humidity", "forecast",
+    "sunrise", "sunset", "dusk", "dawn", "moon", "cloud", "tide", "weathers",
+    "weathertype", "weatherstate", "weathersystem", "raining", "rainy", "rainfall",
+    "drizzle", "downpour", "monsoon", "hail", "snowing", "snowy", "snowfall",
+    "blizzard", "frost", "freezing", "icy", "windy", "winddirection", "windspeed",
+    "gust", "breeze", "tornado", "hurricane", "cyclone", "typhoon", "sandstorm",
+    "dust", "ash", "clouds", "cloudy", "overcast", "sky", "skybox", "skydome",
+    "sunlight", "sunshine", "daylight", "nighttime", "nightfall", "midnight", "noon",
+    "afternoon", "morning", "evening", "twilight", "daycycle", "daynight",
+    "daynightcycle", "puddle", "puddles", "wetness", "wet", "moisture", "drought",
+    "heatwave", "heat", "cold", "warmth", "atmosphere", "atmospheric", "pressure",
+    "smog", "haze", "mist", "misty", "thunderstorm", "stormy", "storms", "raindensity",
+    "snowdensity", "weatherforecast", "lightningbolt", "sundirection", "moondirection",
+    "skycolor", "skylight", "ambientsky", "tides", "waveheight", "oceanwave",
   ]],
   [C.SES, [
+    // ses/muzik/efekt - ses domani
     "audio", "sound", "music", "voice", "sfx", "mixer", "volume", "mute", "soundtrack",
     "ambience", "reverb", "doppler", "audiomix", "playlist", "radio", "bass", "tone",
-    "beep", "speaker", "microphone", "footsteps",
+    "beep", "speaker", "microphone", "footsteps", "sounds", "soundcue", "soundclass",
+    "soundwave", "audiostream", "audiosource", "audiolistener", "audiodevice",
+    "audiosettings", "volumes", "master", "bus", "stereo", "surround", "spatial",
+    "spatialize", "spatialization", "listener", "attenuation", "lowpass", "highpass",
+    "eq", "equalizer", "playsound", "playing", "musictrack", "musicsystem",
+    "musicmanager", "song", "songs", "melody", "jingle", "theme", "vocal", "vocals",
+    "voiceline", "voicelines", "dialogue", "dialogues", "subtitle", "subtitles",
+    "caption", "captions", "chatter", "bark", "barks", "grunt", "scream", "shout",
+    "whisper", "laugh", "breathing", "heartbeat", "thump", "thud", "clang", "clank",
+    "rattle", "creak", "hiss", "buzz", "hum", "whir", "click", "snap", "crack",
+    "boom", "bang", "gunshot", "ricochetsound", "whistle", "whistling", "echo",
+    "acoustics", "sfxvolume", "duck", "ducking", "fade", "fadein", "fadeout",
+    "fading", "crossfade", "silence", "silent", "quiet", "loudness", "decibel",
+    "gain", "amplitude", "frequency", "waveform", "oscillator", "synth",
+    "synthesizer", "sampler", "modulation", "lfo", "footstep", "voiceover",
+    "radiochannel", "musicvolume", "soundvolume", "voicechatvolume", "mixerbus",
   ]],
   [C.ARAYUZ, [
+    // arayuz/hud/widget - arayuz domani
     "ui", "hud", "widget", "menu", "button", "panel", "overlay", "tooltip", "cursor",
     "crosshair", "minimap", "slider", "checkbox", "textbox", "dialog", "toast",
     "notification", "banner", "layout", "screen", "font", "healthbar", "progressbar",
-    "icon", "tab",
+    "icon", "tab", "userinterface", "interface", "uielement", "uimanager", "widgets",
+    "indicators", "indicator", "gauge", "meter", "bar", "reticle", "dmgnumber",
+    "damagenumber", "floatingtext", "popup", "popups", "modal", "toolbar", "submenu",
+    "mainmenu", "pausemenu", "loadingscreen", "menus", "buttons", "labels", "label",
+    "scrollbar", "scrollview", "dropdown", "combobox", "listbox", "radiobutton",
+    "toggle", "picker", "inputfield", "portrait", "border", "anchoring", "anchor",
+    "anchors", "alignment", "align", "margin", "margins", "padding", "spacing",
+    "canvas", "theme", "themes", "theming", "localization", "localized", "locale",
+    "language", "languages", "translation", "translations", "translated", "i18n",
+    "stringtable", "fonts", "fontsize", "glyph", "glyphs", "letter", "letters",
+    "hover", "hovered", "hovering", "clickable", "click", "clicked", "notice",
+    "alert", "alerts", "confirmation", "confirm", "prompt", "prompts", "chatbox",
+    "scoreboard", "infobox", "hudwidget", "hudelement", "compassui", "radarui",
+    "uicolor", "uiscale", "hudscale", "menustate", "menumanager", "popupmenu",
+    "contextmenu", "toastmessage", "notificationcenter", "iconlib", "spriteui",
   ]],
   [C.AG, [
+    // ag/online/senkronizasyon - ag domani
     "network", "ping", "latency", "session", "socket", "replication", "rpc", "online",
-    "multiplayer", "server", "client", "host", "join", "lobby", "match", "packet", "tcp",
-    "udp", "http", "https", "websocket", "steam", "epic", "eos", "platform", "bandwidth",
-    "netmode", "channel", "disconnect", "reconnect", "matchmaking", "login", "auth",
-    "token", "downloader", "upload", "endpoint", "payload", "proxy", "relay", "hostname",
-    "port", "ip",
+    "multiplayer", "server", "client", "host", "join", "lobby", "match", "packet",
+    "tcp", "udp", "http", "https", "websocket", "steam", "epic", "eos", "platform",
+    "bandwidth", "netmode", "channel", "disconnect", "reconnect", "matchmaking",
+    "login", "auth", "token", "downloader", "upload", "endpoint", "payload", "proxy",
+    "relay", "hostname", "port", "ip", "networking", "netdriver", "netconnection",
+    "netguid", "netid", "netrole", "dormancy", "relevancy", "relevant", "reliable",
+    "unreliable", "ack", "resend", "retransmit", "packetloss", "jitter",
+    "lagcompensation", "compensation", "prediction", "predicted", "interpolation",
+    "extrapolation", "snapshots", "snapshot", "compression", "datagram", "hosting",
+    "hosted", "dedicated", "dedicatedserver", "servers", "clients", "connecting",
+    "connected", "connection", "connections", "connect", "handshake", "ssl", "tls",
+    "ipaddress", "ipv4", "ipv6", "p2p", "peer", "peers", "broadcast", "multicast",
+    "sendto", "send", "sending", "sent", "receive", "received", "receiving", "recv",
+    "transmit", "transmission", "transfer", "transferring", "download", "downloads",
+    "downloading", "uploaded", "uploading", "queue", "queued", "queuing", "party",
+    "invite", "invites", "invitation", "invited", "chat", "chats", "chatting",
+    "chatmessage", "messages", "message", "messaging", "typing", "voicechat", "voip",
+    "discord", "richpresence", "presence", "steamworks", "steamapi", "steamid",
+    "xbox", "playstation", "psn", "nintendo", "crossplay", "account", "accounts",
+    "accountid", "credential", "credentials", "password", "username", "user", "users",
+    "userid", "sessionid", "ticket", "oauth", "jwt", "logout", "signin", "signout",
+    "authenticate", "authentication", "authenticator", "netguidcache", "replicated",
+    "replicates", "replicating", "rpcserver", "rpcclient", "worldoriginrebase",
+    "rebase", "relevances", "connectiontable", "nettraffic",
   ]],
   [C.KAYIT, [
+    // kayit/yukleme/konfig - kayit domani
     "save", "saving", "autosave", "cloudsave", "config", "configuration", "setting",
     "settings", "profil", "profile", "kayit", "preference", "prefs", "persist",
     "persistence", "userdata", "checkpoint", "backup", "restore", "export", "import",
-    "registry", "storage", "file", "files",
+    "registry", "storage", "file", "files", "saved", "savegame", "savegames",
+    "savefile", "savefiles", "savedata", "saves", "quicksave", "quickload",
+    "loadgame", "loading", "loaded", "load", "loaddata", "deserialize", "json",
+    "xml", "yaml", "toml", "csv", "writefile", "readfile", "filestream", "filepath",
+    "filename", "extension", "directory", "directories", "folder", "folders",
+    "disk", "cloud", "cloudsync", "sync", "syncing", "overwrite", "rollback",
+    "undo", "redo", "revert", "reverting", "defaults", "configfile", "inifile",
+    "ini", "registrykey", "appdata", "documents", "gamestate", "gameinstance",
+    "persisted", "persistentlevel", "worldsave", "savelist", "userconfig",
+    "usersettings", "settingsoverride", "configdata", "savepoint", "saveversion",
+    "migrationdata", "backuprestore", "loadscreen", "saveload", "profiledata",
+    "userprofile", "configmanager", "savemanager", "loadmanager", "storagewrite",
+    "storageread", "serializedata", "unserializedata",
   ]],
   [C.GIRDI, [
+    // tus/kontrol/girdi - girdi domani
     "input", "inputs", "key", "keys", "keyboard", "mouse", "touch", "gamepad",
-    "controller", "joystick", "axis", "bind", "binding", "hotkey", "rumble", "vibration",
-    "sensitivity", "deadzone", "keymap", "control", "controls", "hold", "press",
-    "release", "tap", "swipe", "drag",
+    "controller", "joystick", "axis", "bind", "binding", "hotkey", "rumble",
+    "vibration", "sensitivity", "deadzone", "keymap", "control", "controls", "hold",
+    "press", "release", "tap", "swipe", "drag", "keypress", "keydown", "keyup",
+    "keycode", "keyevent", "keystroke", "keystrokes", "mouseclick", "mousedown",
+    "mouseup", "mousemove", "mousewheel", "wheel", "pointerposition", "touchstart",
+    "touchend", "touchmove", "touchscreen", "multitouch", "pinch", "longpress",
+    "doubleclick", "doubletap", "clicks", "taps", "tapping", "clicking", "swiping",
+    "dragging", "dragged", "draggable", "stick", "sticks", "thumbstick", "analog",
+    "bumper", "dpad", "buttons", "keybinding", "keybindings", "binds", "bindings",
+    "remap", "remapping", "remapped", "rebind", "rebinding", "inputmapping",
+    "inputaction", "inputactions", "enhancedinput", "inputcomponent", "poll",
+    "polling", "rawinput", "directinput", "xinput", "hid", "usb", "device",
+    "devices", "inputdevice", "controllerid", "controllers", "pad", "pads",
+    "steeringwheel", "pedals", "pedal", "haptic", "haptics", "forcefeedback",
+    "vibrations", "gyro", "gyroscope", "accelerometer", "mousex", "mousey",
+    "mousedx", "mousedy", "lookinput", "lookaxis", "moveinput", "moveaxis",
+    "inputaxis", "axisvalue", "pressed", "released", "held", "holding", "chord",
+    "shortcut", "shortcuts", "macro", "macros", "inputbuffer", "inputcontext",
+    "inputstate", "keystate", "buttonstate", "controllertype", "gamepads",
   ]],
   [C.YAPAYZEKA, [
+    // davranis/algı/yol bulma - yapay zeka domani
     "ai", "behavior", "bt", "brain", "bot", "npc", "enemy", "enemies", "aggro",
     "pathfind", "pathfinding", "navmesh", "flee", "chase", "patrol", "perception",
-    "threat", "difficulty", "companion", "crowd", "aware", "senses", "vision", "decision",
-    "utility", "goap", "blackboard",
+    "threat", "difficulty", "companion", "crowd", "aware", "senses", "vision",
+    "decision", "utility", "goap", "blackboard", "ais", "aiagent", "aicontroller",
+    "behaviors", "behaviour", "behaviours", "behaviortree", "bttask", "btservice",
+    "btdecorator", "selector", "planner", "planning", "plan", "plans", "goal",
+    "goals", "intent", "intents", "intention", "strategy", "strategies", "strategic",
+    "tactic", "tactics", "tactical", "aistate", "alerted", "alert", "suspicious",
+    "suspicion", "suspect", "hunting", "hunt", "hunter", "hunted", "prey", "stalk",
+    "stalking", "ambush", "attacker", "attackers", "target", "targets", "targeted",
+    "los", "lineofsight", "sight", "seeing", "seen", "detect", "detection",
+    "detected", "sensor", "sensors", "sensing", "hearing", "hear", "heard",
+    "noise", "awareness", "spotted", "spot", "attention", "hatelist", "threats",
+    "danger", "dangerous", "hazard", "hazards", "avoid", "avoidance", "avoiding",
+    "evade", "evading", "evasion", "escape", "escaping", "fleeing", "pursuit",
+    "pursuing", "pursue", "chasing", "follower", "followers", "formation",
+    "formations", "squad", "squads", "swarm", "swarming", "herd", "flock",
+    "flocking", "npcs", "monster", "monsters", "creature", "creatures", "mob",
+    "mobs", "boss", "bosses", "hostile", "hostiles", "hostility", "ally", "allies",
+    "faction", "factions", "crew", "stealth", "sneak", "sneaking", "visibility",
+    "visible", "cover", "flanking", "flank", "leash", "navmeshdata", "navgraph",
+    "navpoly", "pathpoint", "paths", "patrolpoint", "patrolling", "patrols",
+    "spawnenemy", "enemycount", "enemylist", "aiperception", "aidamage", "aihealth",
   ]],
   [C.ZAMAN, [
-    "timer", "clock", "day", "night", "season", "date", "time", "timeofday", "cooldown",
-    "duration", "interval", "tickrate", "schedule", "countdown", "elapsed", "delta",
-    "deltatime", "timestamp", "uptime", "calendar", "year", "month", "hour", "minute",
-    "second", "delay", "realtime", "daytime",
+    // zamanlayici/sayac/gun dongusu - zaman domani
+    "timer", "clock", "day", "night", "season", "date", "time", "timeofday",
+    "cooldown", "duration", "interval", "tickrate", "schedule", "countdown", "elapsed",
+    "delta", "deltatime", "timestamp", "uptime", "calendar", "year", "month", "hour",
+    "minute", "second", "delay", "realtime", "daytime", "timers", "timeout",
+    "timeouts", "timeleft", "timeremaining", "expired", "expiry", "expire",
+    "expiration", "period", "periodic", "timespan", "timestep", "ticks", "ticked",
+    "ticking", "tickcount", "frametime", "gameclock", "gametime", "simtime",
+    "localtime", "utc", "timezone", "stopwatch", "countdowns", "remaining",
+    "millisecond", "milliseconds", "days", "week", "weeks", "weekday", "weekend",
+    "months", "years", "era", "epoch", "age", "aging", "holiday", "holidays",
+    "festival", "cron", "scheduled", "scheduler", "alarm", "reminder", "reminders",
+    "sleep", "sleeping", "wake", "wakeup", "slowmotion", "slowmo", "timescale",
+    "timedilation", "fastforward", "rewind", "nightday", "daycount", "hourcount",
+    "timecycle", "clockcycle", "gameclockspeed", "cooldowns", "cooldownleft",
+    "cooldownremaining", "spawninterval", "respawntime", "respawntimer", "uptimecount",
   ]],
   [C.DEBUG, [
+    // hata ayiklama/dev/log - debug domani
     "debug", "debugger", "dev", "developer", "console", "cheat", "cheats", "test",
     "testing", "assert", "log", "logging", "logger", "dump", "dbg", "breakpoint",
-    "profiling", "verbose", "warning", "error", "exception", "crash",
+    "profiling", "verbose", "warning", "error", "exception", "crash", "debugging",
+    "devmode", "devbuild", "debugdraw", "debugprint", "print", "printf", "println",
+    "trace", "tracing", "stacktrace", "backtrace", "callstack", "symbol", "symbols",
+    "diagnostic", "diagnostics", "analytics", "telemetry", "metrics", "metric",
+    "report", "reports", "reporting", "audit", "monitor", "monitoring", "watch",
+    "watchdog", "inspector", "inspect", "hook", "hooks", "hooking", "hooked",
+    "detour", "patch", "patching", "patched", "interceptor", "intercept",
+    "intercepted", "inject", "injection", "injected", "attach", "detach", "cheater",
+    "cheating", "experimental", "prototype", "unstable", "crashdump", "crashed",
+    "crashes", "fatal", "panic", "abort", "terminate", "fail", "failed", "failure",
+    "fault", "invalid", "broken", "fixme", "todo", "hack", "hacks", "hacked",
+    "workaround", "temporary", "temp", "tmp", "placeholder", "stub", "mock",
+    "unittest", "benchmark", "performance", "perf", "profiled", "timings", "sampling",
+    "counters", "verbosity", "logged", "logs", "spew", "screenshot", "framecounter",
+    "debughud", "debugspawn", "cheatmenu", "devtools", "internaltest", "diagnosticsdump",
   ]],
   [C.ANTIHILE, [
+    // koruma/dogrulama/sifreleme - antihile domani
     "anticheat", "shield", "protect", "protection", "encrypt", "encryption", "decrypt",
-    "obfus", "obfuscate", "integrity", "secure", "security", "guard", "ban", "validate",
-    "verify", "signature", "checksum", "license", "drm", "hwid", "sandbox", "permission",
-    "tamper", "jailbreak", "guardian", "defender",
+    "obfus", "obfuscate", "integrity", "secure", "security", "guard", "ban",
+    "validate", "verify", "signature", "checksum", "license", "drm", "hwid",
+    "sandbox", "permission", "tamper", "jailbreak", "guardian", "defender",
+    "battleye", "easyanticheat", "eac", "vanguard", "denuvo", "vmprotect", "themida",
+    "obfuscated", "obfuscation", "scramble", "cipher", "ciphertext", "plaintext",
+    "aes", "rsa", "sha", "md5", "hash", "hashed", "hashing", "digest", "nonce",
+    "salt", "hmac", "signed", "signing", "verified", "verification", "validation",
+    "crc", "parity", "flagged", "violation", "banned", "banning", "bans",
+    "blacklist", "blacklisted", "whitelist", "allowlist", "blocklist", "restricted",
+    "forbid", "deny", "denied", "revoke", "revoked", "piracy", "pirated", "crack",
+    "cracked", "harden", "hardened", "tampered", "tampering", "corrupted",
+    "anomaly", "intrusion", "intruder", "malware", "exploit", "exploits",
+    "vulnerability", "mitigation", "defend", "sentinel", "watcher", "encrypted",
+    "decrypted", "decrypting", "encrypting", "authenticity", "authentic",
+    "whitelisting", "blacklisting", "protective", "protected", "unprotected",
+    "integritycheck", "securitycheck", "banwave", "cheatdetection", "tampercheck",
   ]],
   [C.BELLEK, [
+    // bellek/allocator/motor icleri - bellek domani
     "memory", "mem", "alloc", "allocation", "allocator", "heap", "pool", "malloc",
-    "garbage", "gc", "refcount", "buffer", "arena", "leak", "vmem", "address", "pointer",
-    "deref", "mmap", "paging", "virtualalloc", "readprocess", "writeprocess", "snapshot",
-    "cache", "free",
+    "garbage", "gc", "refcount", "buffer", "arena", "leak", "vmem", "address",
+    "pointer", "deref", "mmap", "paging", "virtualalloc", "readprocess",
+    "writeprocess", "snapshot", "cache", "free", "memmgr", "memorypool", "memblock",
+    "allocations", "allocated", "realloc", "calloc", "freeing", "freed", "freelist",
+    "deallocation", "deallocate", "dealloc", "heapalloc", "heapsize", "stackalloc",
+    "stack", "stacks", "buffered", "buffering", "buffers", "ringbuffer", "pooled",
+    "pooling", "objectpool", "slab", "page", "pages", "paged", "pagefile", "virtual",
+    "commit", "decommit", "mapping", "mapped", "unmap", "handle", "handles",
+    "refcounted", "reference", "references", "referenced", "weakref", "owner",
+    "owned", "ownership", "copymemory", "memcpy", "memset", "alignment", "aligned",
+    "overrun", "underflow", "leaks", "leaking", "arenas", "lifo", "fifo",
+    "virtualquery", "virtualfree", "openprocess", "closehandle", "processid",
+    "baseaddress", "module", "modules", "dll", "imagebase", "iat", "rawpointer",
+    "dereference", "indirect", "garbagecollection", "garbagecollector", "compact",
+    "compaction", "oom", "outofmemory", "memorypressure", "cachehit", "cachemiss",
+    "cached", "caching", "eviction", "lru", "workingset", "memalign", "byteswap",
+    "modulebase", "modulebaseaddress", "peimage", "imagebuffer", "gnames",
+    "guobjectarray", "fnamepool", "fmemory", "il2cppdomain", "monoalloc", "heapgrow",
   ]],
 ];
 
@@ -301,6 +644,194 @@ const WRITES: Record<string, string> = {
 };
 
 const PLATFORM_WORDS = ["steam", "epic", "eos", "platform"];
+
+// ---------------------------------------------------------------------------
+// kategori meta tablosu: EN kimlik + Turkce aciklama
+// (ne is yapar / ne hesaplar / nereye yazar-etkiler) - UI'da gosterilir
+// ---------------------------------------------------------------------------
+
+interface CategoryMeta {
+  id: string; // makine okur EN kimlik (badge/rozet anahtari)
+  ne: string; // ne is yapar
+  hesap: string; // ne hesaplar/okur
+  yazar: string; // nereye yazar/etkiler
+  desc: string; // birlesik kisa TR aciklama (kullaniciya gosterilir)
+}
+
+const CATEGORY_META: Record<string, CategoryMeta> = {
+  [C.SAGLIK]: {
+    id: "character_health",
+    ne: "Karakter sagligini/can durumunu yonetir",
+    hesap: "HP/mana/stamina degerlerini ve yenilenme miktarini hesaplar",
+    yazar: "Health/can ve stamina alanlarina yazar",
+    desc: "Karakter sagligi domani: can/HP/mana/stamina degerlerini okuyup gunceller, hasar-iyilestirme ve yenilenme miktarini hesaplar; sonucu Health/can alanlarina yazar.",
+  },
+  [C.SILAH]: {
+    id: "weapon_damage",
+    ne: "Ates etme ve hasar uygulama mantigini yurutur",
+    hesap: "Hasar/crit/spread/firerate gibi ates parametrelerini hesaplar",
+    yazar: "Hasar, ammo ve ates hattina yazar",
+    desc: "Silah/hasar domani: ates etme ve hasar uygulama mantigini yurutur; hasar, kritik sans ve mermi sayimi hesaplar; sonucu ammo/hasar alanlarina yazip ates hattini tetikler.",
+  },
+  [C.ENVANTER]: {
+    id: "inventory_items",
+    ne: "Esya ekleme/cikarma/slot yonetimi yapar",
+    hesap: "Esya adedi, agirlik ve slot yerlesimini hesaplar",
+    yazar: "Envanter slot/dizi alanlarina yazar",
+    desc: "Envanter domani: esya ekleme-cikarma ve kuşanma yonetir; adet/agirlik/slot yerlesimi hesaplar; envanter slot ve dizi alanlarina yazar.",
+  },
+  [C.EKONOMI]: {
+    id: "currency_economy",
+    ne: "Para ekleme/harcama/ticaret islemlerini yurutur",
+    hesap: "Bakiye, fiyat ve odul-para donusumunu hesaplar",
+    yazar: "Para/bakiye alanlarina yazar",
+    desc: "Ekonomi domani: para ekleme-harcama-ticaret islemlerini yurutur; bakiye ve fiyat hesaplar; para/bakiye alanlarina yazar.",
+  },
+  [C.ILERLEME]: {
+    id: "progression",
+    ne: "Seviye/skill/odul ilerlemesini yonetir",
+    hesap: "XP toplamini, seviye esigi ve odul kosullarini hesaplar",
+    yazar: "XP/level/progress alanlarina yazar",
+    desc: "Ilerleme domani: seviye-skill-odul akisini yonetir; XP toplami ve seviye esigi hesaplar; XP/level/progress alanlarina yazar.",
+  },
+  [C.KONUM]: {
+    id: "position_transform",
+    ne: "Pozisyon/yon/olcek verisini tutar ve gunceller",
+    hesap: "X/Y/Z koordinat, rotasyon ve mesafe hesaplar",
+    yazar: "Transform/pozisyon verisine yazar",
+    desc: "Konum domani: pozisyon-yon-olcek (transform) verisini tutup gunceller; X/Y/Z koordinat, rotasyon ve mesafe hesaplar; transform/pozisyon verisine yazar.",
+  },
+  [C.HAREKET]: {
+    id: "movement_physics",
+    ne: "Hareket ve fizik simulasyonunu calistirir",
+    hesap: "Hiz/ivme/yercekimi ve carpisma tepkilerini hesaplar",
+    yazar: "Hiz/ivme ve fizik durum degiskenlerine yazar",
+    desc: "Hareket/fizik domani: hareket ve fizik simulasyonunu calistirir; hiz, ivme, yercekimi ve carpisma tepkilerini hesaplar; hiz/fizik durum degiskenlerine yazar.",
+  },
+  [C.ARAC]: {
+    id: "vehicle_driving",
+    ne: "Tasit surus/durum mantigini yurutur",
+    hesap: "Motor hizi, vites, yakit ve surus fizigini hesaplar",
+    yazar: "Arac durumu (hiz/hasar/yakit) alanlarina yazar",
+    desc: "Arac domani: tasit surus ve durum mantigini yurutur; motor hizi, vites, yakit ve surus fizigi hesaplar; aracin hiz/hasar/yakit alanlarina yazar.",
+  },
+  [C.GORSEL]: {
+    id: "visual_model",
+    ne: "Model/skin/kostum ozelliklerini yonetir",
+    hesap: "Model/tur secimi ve gorsel ozellik eslesmesini hesaplar",
+    yazar: "Model/kostum ozellik alanlarina yazar",
+    desc: "Gorsel domani: model-mesh-doku-skin ozelliklerini ve karakter ozellestirmeyi yonetir; gorsel eslesmeleri hesaplar; model/kostum ozellik alanlarina yazar.",
+  },
+  [C.ANIMASYON]: {
+    id: "animation",
+    ne: "Animasyon oynatma ve karisim (blend) yonetir",
+    hesap: "Anim poz/karisim agirliklarini hesaplar",
+    yazar: "Animasyon durum makinesine yazar",
+    desc: "Animasyon domani: anim oynatma, karisim (blend) ve iskelet pozlarini yonetir; poz/karisim agirliklarini hesaplar; animasyon durum makinesine yazar.",
+  },
+  [C.GRAFIK]: {
+    id: "graphics_render",
+    ne: "Render hattini besler ve gorsel ayarlari uygular",
+    hesap: "Cizim listesi, kalite ayarlari ve efekt parametrelerini hesaplar",
+    yazar: "Render hattina parametre tasir",
+    desc: "Grafik domani: render hattini besler; cizim listesi, golge/kalite ve efekt parametrelerini hesaplar; GPU'ya cikis parametreleri tasir.",
+  },
+  [C.KAMERA]: {
+    id: "camera",
+    ne: "Kamera konum/bakis acisini yonetir",
+    hesap: "FOV, takip ve sarsinti (shake) degerlerini hesaplar",
+    yazar: "Kamera hedef/parametre alanlarina yazar",
+    desc: "Kamera domani: kamera konumu ve bakis acisini yonetir; FOV, takip ve sarsinti degerlerini hesaplar; kamera hedef/parametre alanlarina yazar.",
+  },
+  [C.HAVA]: {
+    id: "weather_environment",
+    ne: "Hava durumu/cevre ve gun dongusunu yonetir",
+    hesap: "Hava turu, yogunluk ve gun-saat gecisini hesaplar",
+    yazar: "Cevre/hava durum degiskenlerine yazar",
+    desc: "Hava/cevre domani: hava durumu, gun dongusu ve cevre kosullarini yonetir; hava turu, yogunluk ve saat gecisini hesaplar; cevre durum degiskenlerine yazar.",
+  },
+  [C.SES]: {
+    id: "audio",
+    ne: "Ses/muzik oynatma ve mikserde karistirma yapar",
+    hesap: "Ses seviyesi, mesafe duyulurlugu ve mikser degerlerini hesaplar",
+    yazar: "Ses kanal/volume ayarlarina yazar",
+    desc: "Ses domani: ses ve muzik oynatmayi yonetir; seviye, mesafe duyulurlugu ve mikser degerlerini hesaplar; ses kanal/volume ayarlarina yazar.",
+  },
+  [C.ARAYUZ]: {
+    id: "ui_hud",
+    ne: "Ekrandaki arayuz/HUD ogelerini cizer ve gunceller",
+    hesap: "Gosterge degerleri ve yerlesim/pozisyon hizalamasi hesaplar",
+    yazar: "HUD/widget durumuna yazar",
+    desc: "Arayuz domani: HUD/widget/menu ogelerini cizer ve gunceller; gosterge degerleri ile yerlesim hizalamasini hesaplar; HUD/widget durumuna yazar.",
+  },
+  [C.AG]: {
+    id: "network_multiplayer",
+    ne: "Ag baglantisi ve veri senkronizasyonunu yonetir",
+    hesap: "Gecikme, paket boyutu ve replikasyon farklarini hesaplar",
+    yazar: "Ag akisina paket/parametre gonderir",
+    desc: "Ag/online domani: baglanti ve cok oyunculu senkronizasyonu yonetir; gecikme, paket ve replikasyon farklarini hesaplar; ag akisina paket gonderir.",
+  },
+  [C.KAYIT]: {
+    id: "save_config",
+    ne: "Kayit/yukleme ve konfig yonetimini yapar",
+    hesap: "Kayit verisi boyutu, surum gecisi ve varsayilan degerleri hesaplar",
+    yazar: "Dosya/kayit akisina yazar",
+    desc: "Kayit domani: save/load ve konfig yonetimini yapar; kayit verisi surumu ve varsayilanlari hesaplar; dosya/kayit akisina yazar.",
+  },
+  [C.GIRDI]: {
+    id: "input_controls",
+    ne: "Klavye/fare/kontrolcu girislerini isler",
+    hesap: "Tus eslemesi, eksen degerleri ve duyarlilik hesaplar",
+    yazar: "Girdi durum/tus tablosuna yazar",
+    desc: "Girdi domani: klavye-fare-kontrolcu girislerini isler; tus eslemesi, eksen degerleri ve duyarlilik hesaplar; girdi durum tablosuna yazar.",
+  },
+  [C.YAPAYZEKA]: {
+    id: "ai_behavior",
+    ne: "NPC/dusman davranis kararlarini uretir",
+    hesap: "Hedef secimi, yol bulma ve algı skorlarini hesaplar",
+    yazar: "YZ davranis durumuna yazar",
+    desc: "Yapay zeka domani: NPC/dusman davranisini yonetir; hedef secimi, yol bulma ve algı skorlarini hesaplar; davranis durum makinesine yazar.",
+  },
+  [C.ZAMAN]: {
+    id: "timers_clocks",
+    ne: "Zamanlayici/sayac ve oyun saatini yonetir",
+    hesap: "Gecen sure, kalan sure ve kare deltasini hesaplar",
+    yazar: "Zamanlayici/sayac alanlarina yazar",
+    desc: "Zaman domani: zamanlayici, sayac ve oyun saatini yonetir; gecen/kalan sure ve kare deltasini hesaplar; zamanlayici/sayac alanlarina yazar.",
+  },
+  [C.DEBUG]: {
+    id: "dev_debug",
+    ne: "Gelistirici araclari, log ve test akisini yurutur",
+    hesap: "Tanilama olcumleri ve durum raporlari olusturur",
+    yazar: "Log/konsol akisina yazar",
+    desc: "Debug/dev domani: gelistirici araclari, log ve test akisini yurutur; tanilama olcumleri olusturur; log/konsol akisina yazar.",
+  },
+  [C.ANTIHILE]: {
+    id: "anticheat_security",
+    ne: "Hile/butunluk kontrollerini ve korumayi yurutur",
+    hesap: "Dogrulama ozeti (checksum/imza) ve tutarlik kontrolleri hesaplar",
+    yazar: "Dogrulama sonucu/bayrak alanlarina yazar",
+    desc: "Anti-hile/koruma domani: butunluk ve hile kontrollerini yurutur; checksum/imza ve tutarlik dogrulamasi hesaplar; dogrulama sonucu/bayrak alanlarina yazar.",
+  },
+  [C.BELLEK]: {
+    id: "memory_engine",
+    ne: "Bellek ayirma/serbest birakma ve motor ic yapisini yonetir",
+    hesap: "Adres/offset cozumu ve bellek blok boyutlarini hesaplar",
+    yazar: "Bellek bolgesini ayirir/yazar",
+    desc: "Bellek/motor domani: bellek ayirma (allocator) ve motor ic yapisini yonetir; adres/offset cozumu ve blok boyutlarini hesaplar; bellek bolgesini ayirir/yazar.",
+  },
+  [C.GENEL]: {
+    id: "general",
+    ne: "Genel amacli islem",
+    hesap: "Sozluk eslesmesi olmadigindan hesaplanan veri belirsiz",
+    yazar: "Yazma hedefi belirsiz",
+    desc: "Genel: ad icinde sozluge dusen bir oyun/program anahtar kelimesi bulunamadi; kategori tahmini icin yetersiz ipucu var.",
+  },
+};
+
+function metaOf(cat: string): CategoryMeta {
+  return CATEGORY_META[cat] ?? CATEGORY_META[C.GENEL]!;
+}
 
 // ---------------------------------------------------------------------------
 // fiil sablonlari (Turkce cumle kalibi; {S} = konu)
@@ -424,12 +955,13 @@ function scoreTokenList(tokens: string[]): Map<string, CatScore> {
     }
   };
   const fullLower = tokens.join("");
+  const lastIdx = tokens.length - 1;
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i]!;
-    // sozlukte birebir var -> tam eslesme
+    // sozlukte birebir var -> tam eslesme (son token = bas isim; +1 bonus)
     const direct = DICT[t];
     if (direct !== undefined) {
-      bump(direct, t, 3, true, i);
+      bump(direct, t, i === lastIdx ? 4 : 3, true, i);
       continue;
     }
     // tek harf (x/y/z) yalnizca TAM AD eslesmesinde sayilir
@@ -512,14 +1044,27 @@ function writesOf(cat: string): string {
   return WRITES[cat] ?? "yazma hedefi belirsiz (dusuk guven)";
 }
 
+/** Kategori meta bilgisi + eylem ipucundan SemanticHints uretir. */
+function hintsFor(cat: string, action?: string): SemanticHints {
+  const meta = metaOf(cat);
+  return {
+    action: action ?? meta.ne,
+    computation: meta.hesap,
+    target: meta.yazar,
+  };
+}
+
 function genelInfo(summaryTail = ""): SemanticInfo {
   const base = "Tahmin icin yeterli anahtar kelime bulunamadi";
   return {
     category: C.GENEL,
+    categoryId: metaOf(C.GENEL).id,
     confidence: 0,
     summary: summaryTail ? `${base}; ${summaryTail}` : base,
     computes: "eslesen anahtar kelime yok (girdi adi anlamsiz/normalize edilemedi)",
     writes: "Yazma hedefi belirlenemedi (eslesme yok)",
+    description: metaOf(C.GENEL).desc,
+    hints: hintsFor(C.GENEL),
     tags: [],
   };
 }
@@ -540,12 +1085,16 @@ export function explainName(name: string): SemanticInfo {
   const win = pickWinner(map);
   if (!win) return genelInfo(`"${name}" icin sozluk eslesmesi yok`);
   const subject = subjectOf(win.cat);
+  const verb = tokens.find((t) => VERB_TEMPLATES[t] !== undefined);
   return {
     category: win.cat,
+    categoryId: metaOf(win.cat).id,
     confidence: confidenceOf(win),
     summary: `"${name}": ${subject} baglaminda kullaniliyor olabilir`,
     computes: `Eslesen anahtar kelimeler: ${win.sc.words.join(", ")}`,
     writes: writesOf(win.cat),
+    description: metaOf(win.cat).desc,
+    hints: hintsFor(win.cat, verb ? VERB_TEMPLATES[verb]!.replace("{S}", subject) : undefined),
     tags: tagsOf(map, win.cat),
   };
 }
@@ -584,13 +1133,17 @@ export function explainField(name: string, type: string, structName?: string): S
   if (isPointer) computesParts.push(`${type} turunde isaretci; bellek erisimi muhtemel`);
   else computesParts.push(`${type} turunde deger tasir`);
   computesParts.push(`Eslesen anahtar kelimeler: ${win.sc.words.join(", ")}`);
+  const verb = tokens.find((t) => VERB_TEMPLATES[t] !== undefined);
 
   return {
     category: win.cat,
+    categoryId: metaOf(win.cat).id,
     confidence: confidenceOf(win),
     summary: `${prefix}${cleaned}: ${subject} alanini isaret ediyor`,
     computes: computesParts.join("; "),
     writes: writesOf(win.cat),
+    description: metaOf(win.cat).desc,
+    hints: hintsFor(win.cat, verb ? VERB_TEMPLATES[verb]!.replace("{S}", subject) : isPointer ? "isaretci uzerinden bellek erisimi" : undefined),
     tags: tagsOf(map, win.cat, isPointer ? [C.BELLEK] : []),
   };
 }
@@ -669,10 +1222,13 @@ export function explainFunction(
 
   const info: SemanticInfo = {
     category: win.cat,
+    categoryId: metaOf(win.cat).id,
     confidence: confidenceOf(win),
     summary,
     computes,
     writes: writesOf(win.cat),
+    description: metaOf(win.cat).desc,
+    hints: hintsFor(win.cat, verb ? VERB_TEMPLATES[verb]!.replace("{S}", subject) : `${subject} ile ilgili islem yaptigi tahmin ediliyor`),
     tags: tagsOf(merged, win.cat, extras),
   };
   return info;
@@ -712,10 +1268,13 @@ export function explainStruct(s: RecoveredStruct): SemanticInfo {
   const vftNote = s.vftableRva !== undefined ? "; vftable mevcut (sanal metot tablosu)" : "";
   return {
     category: win.cat,
+    categoryId: metaOf(win.cat).id,
     confidence: confidenceOf(win),
     summary: `${s.name} yapisi tarandi (${total} alan, ${matchedFields} eslesme): baskin kategori ${subject}${vftNote}`,
     computes: `eslesen alanlar/anahtar kelimeler: ${fieldWords.slice(0, 8).join(", ") || "yok"}`,
     writes: writesOf(win.cat),
+    description: metaOf(win.cat).desc,
+    hints: hintsFor(win.cat, `alanlar uzerinden ${subject} verisini yonetir`),
     tags: tagsOf(merged, win.cat),
   };
 }
@@ -732,10 +1291,13 @@ export function explainString(value: string): SemanticInfo {
   const shown = text.length > 64 ? `${text.slice(0, 61)}...` : text;
   return {
     category: win.cat,
+    categoryId: metaOf(win.cat).id,
     confidence: confidenceOf(win),
     summary: `"${shown}" dizesi ${subject} baglamina isaret ediyor`,
     computes: `Eslesen anahtar kelimeler: ${win.sc.words.join(", ")}`,
     writes: writesOf(win.cat),
+    description: metaOf(win.cat).desc,
+    hints: hintsFor(win.cat),
     tags: tagsOf(map, win.cat, PLATFORM_WORDS.some((p) => win.sc.words.includes(p)) ? ["platform"] : []),
   };
 }
@@ -760,10 +1322,13 @@ export function explainEnum(e: RecoveredEnum): SemanticInfo {
   const membersShown = e.members.slice(0, 6).map((m) => m.name).join(", ");
   return {
     category: win.cat,
+    categoryId: metaOf(win.cat).id,
     confidence: confidenceOf(win),
     summary: `${e.name}: ${subject} baglaminda kullanilan sabit degerleri tanimliyor (${e.members.length} uye)`,
     computes: `eslesen anahtar kelimeler: ${[...wordsOf(nm, 4), ...memberWords].slice(0, 8).join(", ") || "yok"}${membersShown ? ` | uyeler: ${membersShown}` : ""}`,
     writes: writesOf(win.cat),
+    description: metaOf(win.cat).desc,
+    hints: hintsFor(win.cat, `${subject} ile ilgili sabit deger kumesini tanimlar`),
     tags: tagsOf(merged, win.cat),
   };
 }

@@ -4,9 +4,13 @@
 //            filter?, limit? }
 //   GET  -> desteklenen dil/tur listesi
 // Analiz sonucu DB'den okunur; codegen.ts dil bazli cikti uretir.
+// Yuklenen dosya diskte acilir ve readAt bayt-okuyucu olarak verilir: boylece
+// her fonksiyon icin opcode onizlemesi (ilk N bayt) ciktiya eklenir. Dosya
+// okunamazsa uretim opcodes alanlari olmadan ayni sekilde devam eder.
 // ----------------------------------------------------------------------------
 
 import { NextRequest, NextResponse } from "next/server";
+import fs from "fs";
 import { db } from "@/lib/db";
 import { generateCode, CODEGEN_LANGUAGES, CODEGEN_KINDS, type CodegenLanguage } from "@/lib/analysis/codegen";
 import type { AnalysisResult } from "@/lib/analysis/types";
@@ -22,8 +26,8 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const a = await db.analysis.findUnique({ where: { uploadId: id } });
-  if (!a) {
+  const row = await db.upload.findUnique({ where: { id }, include: { analysis: true } });
+  if (!row || !row.analysis) {
     return NextResponse.json({ ok: false, error: "Analiz sonucu bulunamadi - once dosyayi yukleyin" }, { status: 404 });
   }
 
@@ -51,10 +55,40 @@ export async function POST(
 
   let result: AnalysisResult;
   try {
-    result = JSON.parse(a.summary) as AnalysisResult;
+    result = JSON.parse(row.analysis.summary) as AnalysisResult;
   } catch {
     return NextResponse.json({ ok: false, error: "Analiz ozeti bozuk (JSON parse hatasi)" }, { status: 500 });
   }
+
+  // --- opcode onizlemesi icin bayt okuyucu (hataya toleransli) ---
+  // Dosya acilamazsa readAt tanimsiz kalir; kod uretimi opcodes olmadan surer.
+  let opened: number | null = null;
+  let fileSize = 0;
+  try {
+    if (row.savedPath && row.savedPath !== "-") {
+      opened = fs.openSync(row.savedPath, "r");
+      fileSize = fs.fstatSync(opened).size;
+    }
+  } catch {
+    opened = null;
+  }
+  const handle = opened; // const: closure icinde dogru tip daralmasi icin
+
+  const readAt =
+    handle !== null
+      ? (fileOffset: number, length: number): Buffer | null => {
+          try {
+            if (fileOffset < 0 || fileOffset >= fileSize) return null;
+            const want = Math.min(length, fileSize - fileOffset);
+            if (want <= 0) return null;
+            const buf = Buffer.alloc(want);
+            const read = fs.readSync(handle, buf, 0, want, fileOffset);
+            return read > 0 ? buf.subarray(0, read) : null;
+          } catch {
+            return null;
+          }
+        }
+      : undefined;
 
   try {
     const out = generateCode(result, {
@@ -63,6 +97,7 @@ export async function POST(
       filter: body.filter,
       limit: typeof body.limit === "number" ? body.limit : undefined,
       imageBase: result.pe?.imageBase,
+      readAt,
     });
     return NextResponse.json({ ok: true, ...out });
   } catch (e) {
@@ -70,5 +105,13 @@ export async function POST(
       { ok: false, error: `Kod uretimi hatasi: ${e instanceof Error ? e.message : String(e)}` },
       { status: 500 },
     );
+  } finally {
+    if (handle !== null) {
+      try {
+        fs.closeSync(handle);
+      } catch {
+        // kapatma hatasi yoksayilir
+      }
+    }
   }
 }

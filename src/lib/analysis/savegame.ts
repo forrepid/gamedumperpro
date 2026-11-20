@@ -1339,6 +1339,65 @@ export function applyEdits(doc: SaveGameDoc, edits: { path: string; value: strin
 }
 
 // ---------------------------------------------------------------------------
+// canli yazma dogrulamasi (yazim sonrasi dosya yeniden okunurken kullanilir)
+// ---------------------------------------------------------------------------
+
+/** Dugumun mevcut degeri, edit'in beklenen degeriyle uyusuyor mu? */
+function valueMatches(node: SavePropNode, raw: string): boolean {
+  const cur = node.value;
+  switch (node.kind) {
+    case "float": {
+      const a = Number(cur);
+      const b = Number(raw);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+      // f32 round-trip yuvarlamasi icin goreli tolerans (f32 eps ~1.2e-7)
+      return Math.abs(a - b) <= Math.max(Math.abs(b) * 1e-6, 1e-9);
+    }
+    case "double": {
+      const a = Number(cur);
+      const b = Number(raw);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+      return Math.abs(a - b) <= Math.max(Math.abs(b) * 1e-12, 1e-15);
+    }
+    case "int": case "int64": case "int16": case "int8":
+    case "uint32": case "uint64": case "uint16": case "byte":
+      return Number(cur) === Number(raw);
+    case "bool": {
+      const t = raw.trim().toLowerCase();
+      const expected = t === "true" || t === "1";
+      return cur === expected;
+    }
+    case "str": case "name": case "enum": case "object": case "softobject":
+      return String(cur ?? "") === String(raw);
+    // struct/array/set/map/opaque: deger alanlari duzenlenemez (applyEdits
+    // zaten reddeder); yol cozulduyse dogrulama sayilir
+    default:
+      return true;
+  }
+}
+
+/**
+ * Canli yazma dogrulamasi: diskten yeniden okunan dokumda her edit'in hedefi
+ * beklenen degeri tasiyor mu? (kalicilik kontrolu)
+ */
+export function verifyEdits(doc: SaveGameDoc, edits: { path: string; value: string }[]): { verified: boolean; errors: string[] } {
+  const errors: string[] = [];
+  for (const e of edits) {
+    try {
+      const target = resolvePath(doc, e.path);
+      if (!valueMatches(target, e.value)) {
+        errors.push(
+          `${e.path}: deger kalicilasmadi (dosyada "${String(target.value ?? "")}", beklenen "${e.value}")`,
+        );
+      }
+    } catch (err) {
+      errors.push(`${e.path}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return { verified: errors.length === 0, errors };
+}
+
+// ---------------------------------------------------------------------------
 // ozet
 // ---------------------------------------------------------------------------
 

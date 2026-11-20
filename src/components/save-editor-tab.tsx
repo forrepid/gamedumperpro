@@ -4,7 +4,8 @@
 // Save Editor sekmesi: Unreal/Epic .sav (GVAS) ve Steam .vdf dosyalarini
 // canli duzenleme (online editor-writer). Agac gorunumu, tip duyarli deger
 // alanlari, sifreli dosyalar icin AES anahtar paneli, degisiklikleri
-// .edited kopyaya yazma ve indirme.
+// .edited kopyaya yazma ve indirme (varsayilan) + "Canli Yaz" modu:
+// orijinal dosya uzerine yazim (otomatik yedek + dogrulama).
 // ----------------------------------------------------------------------------
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -17,8 +18,20 @@ import {
   Loader2,
   RotateCcw,
   Save,
+  ShieldCheck,
+  TriangleAlert,
 } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,6 +42,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import type { SavePropNode } from "@/lib/analysis/savegame";
 import type { VdfNode } from "@/lib/analysis/vdf";
@@ -64,6 +78,36 @@ interface SaveGameGetResponse {
   error?: string;
   hint?: string;
   truncated?: boolean;
+}
+
+/** PUT cevabi - kopya modu ve canli mod ortak alanlar */
+interface SavePutResponse {
+  ok: boolean;
+  type?: "savegame" | "vdf";
+  live?: boolean;
+  applied?: number;
+  errors?: string[];
+  // canli mod alanlari
+  verified?: boolean;
+  verifyErrors?: string[];
+  backup?: { fileName: string; path?: string; rel?: string; size?: number };
+  sizeBefore?: number;
+  sizeAfter?: number;
+  encrypted?: boolean;
+  restored?: boolean;
+  removedEditedCopy?: boolean;
+  // kopya modu
+  editedSize?: number;
+  downloadUrl?: string;
+  error?: string;
+  hint?: string;
+}
+
+/** Canli yazma sonuc panelinde gosterilen tek degisiklik */
+interface AppliedChange {
+  path: string;
+  value: string;
+  oldValue: string;
 }
 
 const EDITABLE_KINDS = new Set([
@@ -243,10 +287,16 @@ export default function SaveEditorTab({ uploadId, isVdf }: { uploadId: string; i
   const [doc, setDoc] = useState<SaveGameGetResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [edits, setEdits] = useState<Record<string, string>>({});
+  const [originals, setOriginals] = useState<Record<string, string>>({});
   const [keyHex, setKeyHex] = useState("");
   const [cipher, setCipher] = useState("aes-256-ecb");
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState<{ applied: number; errors: string[]; downloadUrl: string } | null>(null);
+
+  // canli yazma modu: kapali = varsayilan (kopya + indir); acik = orijinal uzerine yaz
+  const [liveWrite, setLiveWrite] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [liveResult, setLiveResult] = useState<{ res: SavePutResponse; changes: AppliedChange[] } | null>(null);
 
   const keyQuery = keyHex.trim() ? `&keyHex=${encodeURIComponent(keyHex.trim())}&cipher=${cipher}` : "";
 
@@ -268,6 +318,7 @@ export default function SaveEditorTab({ uploadId, isVdf }: { uploadId: string; i
   }, [load]);
 
   const onEdit = useCallback((path: string, value: string, original: string) => {
+    setOriginals((prev) => (prev[path] === undefined ? { ...prev, [path]: original } : prev));
     setEdits((prev) => {
       const next = { ...prev };
       if (value === original) delete next[path];
@@ -276,45 +327,71 @@ export default function SaveEditorTab({ uploadId, isVdf }: { uploadId: string; i
     });
   }, []);
 
-  const editList = useMemo(
-    () => Object.entries(edits).map(([path, value]) => ({ path, value })),
-    [edits],
+  const editList = useMemo<AppliedChange[]>(
+    () =>
+      Object.entries(edits).map(([path, value]) => ({
+        path,
+        value,
+        oldValue: originals[path] ?? "(bilinmiyor)",
+      })),
+    [edits, originals],
   );
 
-  const saveEdits = useCallback(async () => {
-    if (editList.length === 0) return;
-    setSaving(true);
-    try {
-      const res = await fetch(`/api/uploads/${uploadId}/savegame`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          edits: editList,
-          ...(keyHex.trim() ? { keyHex: keyHex.trim(), cipher } : {}),
-        }),
-      });
-      const d = (await res.json()) as {
-        ok: boolean;
-        applied?: number;
-        errors?: string[];
-        downloadUrl?: string;
-        error?: string;
-      };
-      if (d.ok) {
-        setSaveResult({ applied: d.applied ?? 0, errors: d.errors ?? [], downloadUrl: d.downloadUrl ?? `/api/uploads/${uploadId}/savegame/download` });
-        toast({ title: `${d.applied ?? 0} degisiklik yazildi` });
-        // duzenlenen kopyayi yeniden yukle (editedFile=true doner)
-        setEdits({});
-        void load();
-      } else {
-        toast({ title: "Kaydetme basarisiz", description: d.error ?? "", variant: "destructive" });
+  const performSave = useCallback(
+    async (live: boolean) => {
+      if (editList.length === 0) return;
+      setSaving(true);
+      try {
+        const res = await fetch(`/api/uploads/${uploadId}/savegame`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            edits: editList.map(({ path, value }) => ({ path, value })),
+            ...(keyHex.trim() ? { keyHex: keyHex.trim(), cipher } : {}),
+            ...(live ? { live: true } : {}),
+          }),
+        });
+        const d = (await res.json()) as SavePutResponse;
+        if (d.ok) {
+          if (live) {
+            setLiveResult({ res: d, changes: editList });
+            toast({
+              title: "Canlı yazma başarılı",
+              description: `Orijinal dosya güncellendi${d.backup?.fileName ? ` - yedek: ${d.backup.fileName}` : ""}${d.verified ? " (doğrulandı)" : ""}`,
+            });
+          } else {
+            setSaveResult({ applied: d.applied ?? 0, errors: d.errors ?? [], downloadUrl: d.downloadUrl ?? `/api/uploads/${uploadId}/savegame/download` });
+            toast({ title: `${d.applied ?? 0} degisiklik yazildi` });
+          }
+          setEdits({});
+          setOriginals({});
+          void load();
+        } else if (live) {
+          setLiveResult({ res: d, changes: editList });
+          const extra = d.restored ? " (yedekten geri yüklendi)" : "";
+          toast({
+            title: "Canlı yazma başarısız" + extra,
+            description: d.error ?? d.errors?.join(", ") ?? "",
+            variant: "destructive",
+          });
+          void load();
+        } else {
+          toast({ title: "Kaydetme basarisiz", description: d.error ?? "", variant: "destructive" });
+        }
+      } catch {
+        toast({ title: live ? "Canlı yazma hatası (ağ)" : "Kaydetme hatasi (ag)", variant: "destructive" });
+      } finally {
+        setSaving(false);
       }
-    } catch {
-      toast({ title: "Kaydetme hatasi (ag)", variant: "destructive" });
-    } finally {
-      setSaving(false);
-    }
-  }, [uploadId, editList, keyHex, cipher, toast, load]);
+    },
+    [uploadId, editList, keyHex, cipher, toast, load],
+  );
+
+  const onSaveClick = useCallback(() => {
+    if (editList.length === 0) return;
+    if (liveWrite) setConfirmOpen(true); // onay diyalogu -> performSave(true)
+    else void performSave(false);
+  }, [editList.length, liveWrite, performSave]);
 
   const summary = doc?.summary ?? {};
 
@@ -351,6 +428,19 @@ export default function SaveEditorTab({ uploadId, isVdf }: { uploadId: string; i
             <span>· {String(summary.maxDepth ?? doc?.meta?.maxDepth ?? 0)} derinlik</span>
           </>
         )}
+      </div>
+
+      {/* canli yazma modu anahtari */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+        <Switch id="live-write-switch" checked={liveWrite} onCheckedChange={setLiveWrite} />
+        <label htmlFor="live-write-switch" className="cursor-pointer text-[11px] font-medium text-amber-200">
+          Canlı Yaz (orijinal dosyayı güncelle)
+        </label>
+        <span className="text-[10px] text-zinc-400">
+          {liveWrite
+            ? "açık: Kaydet → orijinal dosya üzerine yazılır; önce otomatik .bak-... yedeği alınır, sonra doğrulanır"
+            : "kapalı (varsayılan): değişiklikler .edited kopyaya yazılır, orijinal dosya korunur"}
+        </span>
       </div>
 
       {/* sifreli dosya anahtar paneli */}
@@ -413,12 +503,12 @@ export default function SaveEditorTab({ uploadId, isVdf }: { uploadId: string; i
             <Button
               variant="outline"
               size="sm"
-              className="h-7 border-emerald-500/40 px-2 text-[11px] text-emerald-300 hover:bg-emerald-500/10"
-              onClick={saveEdits}
+              className={`h-7 border px-2 text-[11px] ${liveWrite ? "border-amber-500/50 text-amber-200 hover:bg-amber-500/10" : "border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10"}`}
+              onClick={onSaveClick}
               disabled={saving || editList.length === 0}
             >
               {saving ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Save className="mr-1 h-3 w-3" />}
-              Kaydet ({editList.length})
+              {liveWrite ? `Canlı Yaz (${editList.length})` : `Kaydet (${editList.length})`}
             </Button>
             <Button
               variant="outline"
@@ -463,7 +553,7 @@ export default function SaveEditorTab({ uploadId, isVdf }: { uploadId: string; i
         </div>
       </div>
 
-      {/* kaydetme sonucu */}
+      {/* kaydetme sonucu (kopya modu - varsayilan) */}
       {saveResult && (
         <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-[11px] text-emerald-200">
           <p>
@@ -478,6 +568,131 @@ export default function SaveEditorTab({ uploadId, isVdf }: { uploadId: string; i
           ))}
         </div>
       )}
+
+      {/* canli yazma sonucu */}
+      {liveResult && (
+        <div className={`rounded-lg border p-3 text-[11px] ${liveResult.res.ok ? "border-emerald-500/30 bg-emerald-500/5" : "border-rose-500/30 bg-rose-500/5"}`}>
+          {liveResult.res.ok ? (
+            <>
+              <p className="flex items-center gap-1.5 font-medium text-emerald-300">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                Canlı yazma başarılı — <span className="text-emerald-400">orijinal dosya güncellendi</span> (live)
+              </p>
+              <ul className="mt-1.5 space-y-0.5 text-zinc-300">
+                <li>
+                  Otomatik yedek (backup):{" "}
+                  <code className="rounded bg-zinc-900 px-1 text-emerald-300">{liveResult.res.backup?.fileName ?? "-"}</code>
+                  {liveResult.res.backup?.size !== undefined ? ` · ${liveResult.res.backup.size} bayt` : ""}
+                  {liveResult.res.backup?.rel ? ` · storage/uploads/${liveResult.res.backup.rel}` : ""}
+                </li>
+                <li>
+                  Doğrulama (verify):{" "}
+                  {liveResult.res.verified ? (
+                    <span className="text-emerald-300">başarılı — dosya diskten yeniden okundu, değişiklikler kalıcı</span>
+                  ) : (
+                    <span className="text-rose-300">başarısız — orijinal dosya yedekten geri yüklendi</span>
+                  )}
+                </li>
+                {liveResult.res.sizeBefore !== undefined && liveResult.res.sizeAfter !== undefined && (
+                  <li>
+                    Boyut: {liveResult.res.sizeBefore} → {liveResult.res.sizeAfter} bayt
+                    {liveResult.res.encrypted ? " · AES yeniden şifrelendi" : ""}
+                    {liveResult.res.removedEditedCopy ? " · bayat .edited kopyası temizlendi" : ""}
+                  </li>
+                )}
+                <li>
+                  Uygulanan değişiklikler ({liveResult.changes.length}):
+                  <div className="mt-1 max-h-40 overflow-y-auto rounded border border-zinc-800 bg-zinc-950/80 p-2 font-mono text-[10px] scrollbar-thin">
+                    {liveResult.changes.map((c) => (
+                      <div key={c.path} className="truncate">
+                        <span className="text-zinc-300">{c.path}</span>:{" "}
+                        <span className="text-zinc-500 line-through">{c.oldValue}</span>{" "}
+                        <span className="text-zinc-400">→</span>{" "}
+                        <span className="text-emerald-300">{c.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </li>
+              </ul>
+              {(liveResult.res.errors?.length ?? 0) > 0 &&
+                liveResult.res.errors!.map((e) => (
+                  <p key={e} className="text-amber-400">{e}</p>
+                ))}
+            </>
+          ) : (
+            <>
+              <p className="flex items-center gap-1.5 font-medium text-rose-300">
+                <TriangleAlert className="h-3.5 w-3.5" />
+                Canlı yazma başarısız
+                {liveResult.res.restored ? " — orijinal dosya yedekten geri yüklendi" : ""}
+              </p>
+              {liveResult.res.error && <p className="mt-1 text-zinc-300">{liveResult.res.error}</p>}
+              {(liveResult.res.errors?.length ?? 0) > 0 && (
+                <div className="mt-1 max-h-24 overflow-y-auto rounded border border-zinc-800 bg-zinc-950/80 p-2 font-mono text-[10px] text-amber-300 scrollbar-thin">
+                  {liveResult.res.errors!.map((e) => (
+                    <div key={e}>{e}</div>
+                  ))}
+                </div>
+              )}
+              {(liveResult.res.verifyErrors?.length ?? 0) > 0 && (
+                <div className="mt-1 max-h-24 overflow-y-auto rounded border border-zinc-800 bg-zinc-950/80 p-2 font-mono text-[10px] text-rose-300 scrollbar-thin">
+                  <p className="text-zinc-400">verify hataları:</p>
+                  {liveResult.res.verifyErrors!.map((e) => (
+                    <div key={e}>{e}</div>
+                  ))}
+                </div>
+              )}
+              {liveResult.res.backup?.fileName && (
+                <p className="mt-1 text-zinc-400">
+                  Otomatik yedek: <code className="rounded bg-zinc-900 px-1">{liveResult.res.backup.fileName}</code>
+                </p>
+              )}
+            </>
+          )}
+          <button
+            onClick={() => setLiveResult(null)}
+            className="mt-2 rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-900"
+          >
+            kapat
+          </button>
+        </div>
+      )}
+
+      {/* canli yazma onay diyalogu */}
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent className="max-w-md border-zinc-700 bg-zinc-950">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-amber-300">
+              <TriangleAlert className="h-4 w-4" />
+              Canlı yazma onayı
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2 text-zinc-300">
+              <span className="block">
+                Bu işlem <span className="font-semibold text-amber-300">orijinal save dosyasını</span> sunucu
+                diskinde günceller ({editList.length} değişiklik, üzerine yazma).
+              </span>
+              <span className="block text-zinc-400">
+                Yazmadan önce otomatik yedek (backup) oluşturulur; yazma sonrası dosya yeniden okunarak
+                doğrulanır, doğrulama başarısızsa yedekten geri yüklenir.
+              </span>
+              <span className="block text-zinc-500">
+                Vazgeçerseniz hiçbir şey değişmez; kopya modu (varsayılan) için anahtarı kapatabilirsiniz.
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="border-zinc-700 bg-transparent text-zinc-300 hover:bg-zinc-900 hover:text-zinc-100">
+              Vazgeç
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-amber-600 text-white hover:bg-amber-500"
+              onClick={() => void performSave(true)}
+            >
+              Evet, canlı yaz
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

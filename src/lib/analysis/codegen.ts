@@ -3,9 +3,14 @@
 //
 // AnalysisResult icindeki fonksiyon/struct/enum/dize verisini, kullanicinin
 // sectigi dilde (cpp/csharp/python/rust/typescript/java/lua/json) sozdizimsel
-// olarak dogru iskeletlere dokar. Her fonksiyon icin RVA/VA/boyut + prologue
-// baytlarindan AOB deseni uretilir: son 4 bayt ve RIP-goreli pointer load /
-// E8-E9 rel32 alanlari "??" joker yapilir (ASLR -> adres gecici).
+// olarak dogru iskeletlere dokar. Her fonksiyon icin RVA/VA/FILE-OFFSET/boyut
+// + prologue baytlarindan AOB deseni uretilir: son 4 bayt ve RIP-goreli pointer
+// load / E8-E9 rel32 alanlari "??" joker yapilir (ASLR -> adres gecici).
+//
+// Opcode onizlemesi: readAt bayt-okuyucu verildiyse her fonksiyonun ilk
+// OPCODE_MAX_BYTES bayti dosyadan okunur (RVA -> file offset eslemesi pe.ts
+// bolum tablosu uzerinden) ve yorum satiri + json "opcodes" alani olarak
+// ciktiya eklenir. Okuma basarisizsa o oge icin sessizce atlanir.
 //
 // Fonksiyon adlari: etiket yoksa sub_<RVA8hex> (cikti kodunda ve yorumda).
 // Cikti dosya adlari: <kind>_<language>.<ext> (h/cs/py/rs/ts/java/lua/json).
@@ -20,6 +25,7 @@ import type {
   RecoveredStruct,
   StructField,
 } from "./types";
+import { rvaToFileOffset } from "./pe";
 
 // ---------------------------------------------------------------------------
 // public tipler
@@ -33,6 +39,12 @@ export interface CodegenOptions {
   limit?: number; // varsayilan 500
   filter?: string; // ad icinde buyuk/kucuk harf duyarsiz arama
   imageBase?: number; // verildiyse VA = imageBase + RVA
+  /**
+   * Dosya bayt okuyucu (opcode onizlemesi icin): verilen dosya offsetinden
+   * en fazla `length` bayt okur; okuyamazsa null dondurur. Verilmemesi
+   * opcode onizlemesini kapatir (kod uretimi yine calisir).
+   */
+  readAt?: (fileOffset: number, length: number) => Buffer | null;
 }
 
 export interface CodegenOutput {
@@ -72,6 +84,56 @@ function hx(n: number): string {
 
 function hxl(n: number): string {
   return `0x${Math.max(0, Math.floor(n)).toString(16)}`;
+}
+
+/** Opcode onizlemesi icin okunacak azami bayt (16-32 araligi; 24 secildi). */
+const OPCODE_MAX_BYTES = 24;
+
+/** Dosya offseti + hex string cifti (opcode onizlemesi). */
+interface OpcodePreview {
+  fileOff: number;
+  hex: string;
+}
+
+/**
+ * RVA -> dosya offset esleyici + opcode bayt okuyucu. readAt verilmezse ya da
+ * PE bolum tablosu yoksa `available=false` doner; hicbir yol hata firlatmaz.
+ */
+interface OpcodeResolver {
+  available: boolean;
+  offsetOf(rva: number): number;
+  opcodesAt(rva: number, size: number): OpcodePreview | undefined;
+}
+
+function makeOpcodeResolver(r: AnalysisResult, readAt?: CodegenOptions["readAt"]): OpcodeResolver {
+  const sections = r.pe?.sections ?? [];
+  const sizeOfHeaders = r.pe?.sizeOfHeaders;
+  const fileSize = r.file.size;
+  const available = typeof readAt === "function" && sections.length > 0;
+  const offsetOf = (rva: number): number =>
+    available ? rvaToFileOffset(rva, sections, sizeOfHeaders, fileSize) : -1;
+  return {
+    available,
+    offsetOf,
+    opcodesAt(rva: number, size: number): OpcodePreview | undefined {
+      if (!available || typeof readAt !== "function") return undefined;
+      const off = offsetOf(rva);
+      if (off < 0) return undefined;
+      const want = size > 0 ? Math.min(size, OPCODE_MAX_BYTES) : OPCODE_MAX_BYTES;
+      if (want < 4) return undefined; // cok kucuk parca: anlamsiz onizleme
+      try {
+        const buf = readAt(off, want);
+        if (!buf || buf.length === 0) return undefined;
+        const parts: string[] = [];
+        for (let i = 0; i < buf.length; i++) {
+          parts.push(buf.readUInt8(i).toString(16).padStart(2, "0").toUpperCase());
+        }
+        return { fileOff: off, hex: parts.join(" ") };
+      } catch {
+        return undefined; // hataya tolerans: bu ogede opcode yok
+      }
+    },
+  };
 }
 
 /** Dil anahtar sozcukleriyle cakismayi hassasiyetle birakiriz; yalnizca
@@ -227,6 +289,8 @@ interface FnMeta {
   size: number;
   aob: string;
   section: string;
+  fileOff: number; // RVA -> dosya offseti (cozulemediyse -1)
+  opcodes?: string; // ilk N baytin hex onizlemesi (cozulemediyse tanimsiz)
   strings: string[];
   apiCalls: string[];
   callsOut: number;
@@ -253,12 +317,14 @@ interface EmitCtx {
   enums: RecoveredEnum[];
   strings: InterestingString[];
   counts: SelCounts;
+  resolver: OpcodeResolver;
 }
 
 type Emitter = (ctx: EmitCtx) => string[];
 
-function fnMeta(f: FunctionEntry, imageBase?: number): FnMeta {
+function fnMeta(f: FunctionEntry, imageBase: number | undefined, resolver: OpcodeResolver): FnMeta {
   const name = functionNameOf(f);
+  const op = resolver.opcodesAt(f.rva, f.size);
   return {
     name,
     identBase: readableName(f.label ?? "") || name,
@@ -267,6 +333,8 @@ function fnMeta(f: FunctionEntry, imageBase?: number): FnMeta {
     size: f.size,
     aob: buildAobPattern(f.prologue),
     section: f.section,
+    fileOff: resolver.offsetOf(f.rva),
+    opcodes: op?.hex,
     strings: f.strings ?? [],
     apiCalls: f.apiCalls ?? [],
     callsOut: f.callsOut ?? 0,
@@ -277,11 +345,20 @@ function fnMeta(f: FunctionEntry, imageBase?: number): FnMeta {
 
 function fnHeaderLines(pre: string, f: FnMeta): string[] {
   const L: string[] = [];
-  L.push(`${pre} RVA: ${hx(f.rva)} | VA: ${hx(f.va)} | SIZE: ${hx(f.size)} | SEC: ${f.section}${f.label ? ` | etiket: ${escStr(f.label)}` : ""}`);
+  const offTxt = f.fileOff >= 0 ? ` | OFF: ${hx(f.fileOff)}` : "";
+  L.push(`${pre} RVA: ${hx(f.rva)}${offTxt} | VA: ${hx(f.va)} | SIZE: ${hx(f.size)} | SEC: ${f.section}${f.label ? ` | etiket: ${escStr(f.label)}` : ""}`);
   L.push(`${pre} AOB: ${f.aob || "-"}`);
+  if (f.opcodes) L.push(`${pre} opcodes @RVA ${hx(f.rva)}: ${f.opcodes}`);
   if (f.strings.length > 0) L.push(`${pre} strings: ${f.strings.map((s) => `"${escStr(s)}"`).join(", ")}`);
   if (f.apiCalls.length > 0) L.push(`${pre} api: ${f.apiCalls.join(", ")}`);
   return L;
+}
+
+/** Struct bilgi yorumuna (kaynak/boyut/vftable) dosya offseti ekler. */
+function vftableOffText(ctx: EmitCtx, s: RecoveredStruct): string {
+  if (s.vftableRva === undefined) return "";
+  const off = ctx.resolver.offsetOf(s.vftableRva);
+  return off >= 0 ? ` | vftable OFF: ${hx(off)}` : "";
 }
 
 function headerLines(pre: string, ctx: EmitCtx, filename: string): string[] {
@@ -293,6 +370,7 @@ function headerLines(pre: string, ctx: EmitCtx, filename: string): string[] {
   L.push(`${pre} Secim: fonksiyon ${ctx.counts.functions} | struct ${ctx.counts.structs} | enum ${ctx.counts.enums} | dize ${ctx.counts.strings}`);
   if (ctx.filter) L.push(`${pre} Filtre: "${escStr(ctx.filter)}" (buyuk/kucuk harf duyarsiz)`);
   if (ctx.imageBase !== undefined) L.push(`${pre} VA = imageBase (${hx(ctx.imageBase)}) + RVA olarak hesaplandi`);
+  if (ctx.resolver.available) L.push(`${pre} opcodes: her fonksiyonun ilk baytlari dosyadan okundu (RVA -> file offset bolum eslemesi)`);
   L.push(`${pre} NOT: offsetler/adresler statik kurtarmadir (tahmini); canli modda dogrulanmali.`);
   L.push(`${pre} AOB: "??" jokerleri rel32/imm32 alanlaridir (ASLR -> adres gecici).`);
   L.push(bar);
@@ -441,6 +519,8 @@ function emitCpp(ctx: EmitCtx): string[] {
       const extra: string[] = [`kaynak: ${s.source}`];
       if (s.size !== undefined) extra.push(`boyut: ${hx(s.size)}`);
       if (s.vftableRva !== undefined) extra.push(`vftable RVA: ${hx(s.vftableRva)}`);
+      const vOff = s.vftableRva !== undefined ? ctx.resolver.offsetOf(s.vftableRva) : -1;
+      if (vOff >= 0) extra.push(`vftable OFF: ${hx(vOff)}`);
       L.push(`}; // ${extra.join(" | ")}`);
       L.push("");
       for (const fld of laid) {
@@ -522,7 +602,7 @@ function emitCSharp(ctx: EmitCtx): string[] {
     const nm = makeNamer();
     for (const s of ctx.structs) {
       const sname = nm(safeIdent(s.name));
-      L.push(`// kaynak: ${s.source}${s.vftableRva !== undefined ? ` | vftable RVA: ${hx(s.vftableRva)}` : ""}${s.size !== undefined ? ` | boyut: ${hx(s.size)}` : ""}`);
+      L.push(`// kaynak: ${s.source}${s.vftableRva !== undefined ? ` | vftable RVA: ${hx(s.vftableRva)}` : ""}${vftableOffText(ctx, s)}${s.size !== undefined ? ` | boyut: ${hx(s.size)}` : ""}`);
       L.push("[StructLayout(LayoutKind.Explicit)]");
       L.push(`public partial struct ${sname}`);
       L.push("{");
@@ -584,15 +664,19 @@ function emitPython(ctx: EmitCtx): string[] {
     L.push("ADDRESSES = {");
     if (ctx.fns.length === 0) L.push("    # (fonksiyon verisi yok)");
     for (const f of ctx.fns) {
-      L.push(`    "${escStr(f.name)}": {"rva": ${hxl(f.rva)}, "va": ${hxl(f.va)}, "size": ${hxl(f.size)}, "aob": "${f.aob || "-"}"}, # SEC: ${escStr(f.section)}`);
+      const offTxt = f.fileOff >= 0 ? `, "off": "${hx(f.fileOff)}"` : "";
+      const opTxt = f.opcodes ? `, "opcodes": "${f.opcodes}"` : "";
+      L.push(`    "${escStr(f.name)}": {"rva": ${hxl(f.rva)}, "va": ${hxl(f.va)}, "size": ${hxl(f.size)}${offTxt}, "aob": "${f.aob || "-"}"${opTxt}}, # SEC: ${escStr(f.section)}`);
     }
     L.push("}");
     L.push("");
     const nm = makeNamer();
     for (const f of ctx.fns) {
       const defName = nm(safeIdent(f.identBase));
+      const offTxt = f.fileOff >= 0 ? ` | OFF: ${hx(f.fileOff)}` : "";
       L.push(`def ${defName}():`);
-      L.push(`    """RVA: ${hx(f.rva)} | VA: ${hx(f.va)} | SIZE: ${hx(f.size)} | AOB: ${f.aob || "-"}"""`);
+      L.push(`    """RVA: ${hx(f.rva)}${offTxt} | VA: ${hx(f.va)} | SIZE: ${hx(f.size)} | AOB: ${f.aob || "-"}"""`);
+      if (f.opcodes) L.push(`    # opcodes @RVA ${hx(f.rva)}: ${f.opcodes}`);
       L.push("    ...");
       L.push("");
     }
@@ -604,7 +688,7 @@ function emitPython(ctx: EmitCtx): string[] {
     for (const s of ctx.structs) {
       const sname = nm(safeIdent(s.name));
       const laid = fieldsWithPadding(s.fields, s.size);
-      L.push(`# kaynak: ${s.source}${s.vftableRva !== undefined ? ` | vftable RVA: ${hx(s.vftableRva)}` : ""}${s.size !== undefined ? ` | boyut: ${hx(s.size)}` : ""}`);
+      L.push(`# kaynak: ${s.source}${s.vftableRva !== undefined ? ` | vftable RVA: ${hx(s.vftableRva)}` : ""}${vftableOffText(ctx, s)}${s.size !== undefined ? ` | boyut: ${hx(s.size)}` : ""}`);
       L.push(`class ${sname}(ctypes.Structure):`);
       L.push("    _pack_ = 1 # pakli yerlesim (offset dogrulamasi icin)");
       L.push("    _fields_ = [");
@@ -668,7 +752,9 @@ function emitRust(ctx: EmitCtx): string[] {
     const nm = makeNamer();
     for (const f of ctx.fns) {
       const name = nm(safeIdent(f.identBase));
-      L.push(`    // RVA: ${hx(f.rva)} | VA: ${hx(f.va)} | SIZE: ${hx(f.size)} | SEC: ${escStr(f.section)} | AOB: ${f.aob || "-"}`);
+      const offTxt = f.fileOff >= 0 ? ` | OFF: ${hx(f.fileOff)}` : "";
+      L.push(`    // RVA: ${hx(f.rva)}${offTxt} | VA: ${hx(f.va)} | SIZE: ${hx(f.size)} | SEC: ${escStr(f.section)} | AOB: ${f.aob || "-"}`);
+      if (f.opcodes) L.push(`    // opcodes @RVA ${hx(f.rva)}: ${f.opcodes}`);
       L.push(`    ("${escStr(name)}", ${hxl(f.rva)}),`);
     }
     L.push("];");
@@ -690,7 +776,7 @@ function emitRust(ctx: EmitCtx): string[] {
     for (const s of ctx.structs) {
       const sname = nm(safeIdent(s.name));
       const laid = fieldsWithPadding(s.fields, s.size);
-      L.push(`// kaynak: ${s.source}${s.vftableRva !== undefined ? ` | vftable RVA: ${hx(s.vftableRva)}` : ""}${s.size !== undefined ? ` | boyut: ${hx(s.size)}` : ""}`);
+      L.push(`// kaynak: ${s.source}${s.vftableRva !== undefined ? ` | vftable RVA: ${hx(s.vftableRva)}` : ""}${vftableOffText(ctx, s)}${s.size !== undefined ? ` | boyut: ${hx(s.size)}` : ""}`);
       L.push("#[repr(C)]");
       L.push(`pub struct ${sname} {`);
       if (laid.length === 0) L.push("    // (alan yok)");
@@ -748,7 +834,9 @@ function emitTypeScript(ctx: EmitCtx): string[] {
     const nm = makeNamer();
     for (const f of ctx.fns) {
       const name = nm(safeIdent(f.identBase));
-      L.push(`    // RVA: ${hx(f.rva)} | VA: ${hx(f.va)} | SIZE: ${hx(f.size)} | SEC: ${escStr(f.section)} | AOB: ${f.aob || "-"}`);
+      const offTxt = f.fileOff >= 0 ? ` | OFF: ${hx(f.fileOff)}` : "";
+      L.push(`    // RVA: ${hx(f.rva)}${offTxt} | VA: ${hx(f.va)} | SIZE: ${hx(f.size)} | SEC: ${escStr(f.section)} | AOB: ${f.aob || "-"}`);
+      if (f.opcodes) L.push(`    // opcodes @RVA ${hx(f.rva)}: ${f.opcodes}`);
       L.push(`    ${name}: ${hxl(f.rva)},`);
     }
     L.push("} as const;");
@@ -760,7 +848,7 @@ function emitTypeScript(ctx: EmitCtx): string[] {
     const nm = makeNamer();
     for (const s of ctx.structs) {
       const sname = nm(safeIdent(s.name));
-      L.push(`// kaynak: ${s.source}${s.vftableRva !== undefined ? ` | vftable RVA: ${hx(s.vftableRva)}` : ""}${s.size !== undefined ? ` | boyut: ${hx(s.size)}` : ""}`);
+      L.push(`// kaynak: ${s.source}${s.vftableRva !== undefined ? ` | vftable RVA: ${hx(s.vftableRva)}` : ""}${vftableOffText(ctx, s)}${s.size !== undefined ? ` | boyut: ${hx(s.size)}` : ""}`);
       L.push(`export interface ${sname} {`);
       if (s.fields.length === 0) L.push("    // (alan yok)");
       for (const fld of s.fields) {
@@ -821,7 +909,7 @@ function emitJava(ctx: EmitCtx): string[] {
     const nm = makeNamer();
     for (const s of ctx.structs) {
       const sname = nm(safeIdent(s.name));
-      L.push(`public class ${sname} { // kaynak: ${s.source}${s.vftableRva !== undefined ? ` | vftable RVA: ${hx(s.vftableRva)}` : ""}`);
+      L.push(`public class ${sname} { // kaynak: ${s.source}${s.vftableRva !== undefined ? ` | vftable RVA: ${hx(s.vftableRva)}` : ""}${vftableOffText(ctx, s)}`);
       if (s.fields.length === 0) L.push("    // (alan yok)");
       for (const fld of s.fields) {
         L.push(`    public ${javaFieldType(fld.type)} ${safeIdent(fld.name)}; // ${hx(fld.offset)} (${escStr(fld.type)}, erisim ${fld.reads} fn)`);
@@ -900,7 +988,7 @@ function emitLua(ctx: EmitCtx): string[] {
     const nm = makeNamer();
     for (const s of ctx.structs) {
       const sname = nm(safeIdent(s.name));
-      L.push(`${sname} = { -- kaynak: ${s.source}${s.vftableRva !== undefined ? ` | vftable RVA: ${hx(s.vftableRva)}` : ""}${s.size !== undefined ? ` | boyut: ${hx(s.size)}` : ""}`);
+      L.push(`${sname} = { -- kaynak: ${s.source}${s.vftableRva !== undefined ? ` | vftable RVA: ${hx(s.vftableRva)}` : ""}${vftableOffText(ctx, s)}${s.size !== undefined ? ` | boyut: ${hx(s.size)}` : ""}`);
       if (s.fields.length === 0) L.push("    -- (alan yok)");
       for (const fld of s.fields) {
         L.push(`    ["${escStr(fld.name)}"] = { off = ${hxl(fld.offset)}, type = "${escStr(fld.type)}" }, -- erisim ${fld.reads} fn`);
@@ -934,7 +1022,9 @@ function emitLua(ctx: EmitCtx): string[] {
     L.push("FunctionAddresses = {");
     if (ctx.fns.length === 0) L.push("    -- (fonksiyon verisi yok)");
     for (const f of ctx.fns) {
-      L.push(`    -- RVA: ${hx(f.rva)} | VA: ${hx(f.va)} | SIZE: ${hx(f.size)} | SEC: ${escStr(f.section)} | AOB: ${f.aob || "-"}`);
+      const offTxt = f.fileOff >= 0 ? ` | OFF: ${hx(f.fileOff)}` : "";
+      L.push(`    -- RVA: ${hx(f.rva)}${offTxt} | VA: ${hx(f.va)} | SIZE: ${hx(f.size)} | SEC: ${escStr(f.section)} | AOB: ${f.aob || "-"}`);
+      if (f.opcodes) L.push(`    -- opcodes @RVA ${hx(f.rva)}: ${f.opcodes}`);
       L.push(`    ["${escStr(f.name)}"] = ${hxl(f.rva)},`);
     }
     L.push("}");
@@ -987,6 +1077,8 @@ function emitJson(ctx: EmitCtx): string[] {
       name: f.name,
       label: f.label || undefined,
       rva: hx(f.rva),
+      fileOffset: f.fileOff >= 0 ? hx(f.fileOff) : undefined,
+      opcodes: f.opcodes,
       va: hx(f.va),
       size: f.size,
       section: f.section,
@@ -1004,6 +1096,9 @@ function emitJson(ctx: EmitCtx): string[] {
       size: s.size,
       base: s.base,
       vftableRva: s.vftableRva !== undefined ? hx(s.vftableRva) : undefined,
+      vftableFileOffset: s.vftableRva !== undefined && ctx.resolver.offsetOf(s.vftableRva) >= 0
+        ? hx(ctx.resolver.offsetOf(s.vftableRva))
+        : undefined,
       vftableVa: s.vftableVa !== undefined ? hx(s.vftableVa) : undefined,
       methodCount: s.methodCount,
       source: s.source,
@@ -1054,6 +1149,7 @@ export function generateCode(result: AnalysisResult, opts: CodegenOptions): Code
   const limit = Math.max(1, Math.min(opts.limit ?? 500, 5000));
   const filter = opts.filter && opts.filter.trim() ? opts.filter.trim() : undefined;
   const imageBase = opts.imageBase;
+  const resolver = makeOpcodeResolver(result, opts.readAt);
 
   const want = {
     functions: opts.kind === "all" || opts.kind === "functions",
@@ -1079,7 +1175,7 @@ export function generateCode(result: AnalysisResult, opts: CodegenOptions): Code
     filter,
     imageBase,
     want,
-    fns: selFns.items.map((f) => fnMeta(f, imageBase)),
+    fns: selFns.items.map((f) => fnMeta(f, imageBase, resolver)),
     structs: selStructs.items,
     enums: selEnums.items,
     strings: selStrings.items,
@@ -1089,6 +1185,7 @@ export function generateCode(result: AnalysisResult, opts: CodegenOptions): Code
       enums: selEnums.items.length,
       strings: selStrings.items.length,
     },
+    resolver,
   };
 
   const lines = EMITTERS[opts.language]!(ctx);
@@ -1102,6 +1199,12 @@ export function generateCode(result: AnalysisResult, opts: CodegenOptions): Code
   notes.push("Offsetler/adresler statik kurtarmadir (tahmini); canli modda dogrulanmali.");
   if (imageBase !== undefined) notes.push(`VA = imageBase (${hx(imageBase)}) + RVA ile hesaplandi.`);
   if (want.functions) {
+    if (resolver.available) {
+      const withOp = ctx.fns.filter((f) => f.opcodes).length;
+      notes.push(`Opcode onizlemesi: ${withOp}/${ctx.fns.length} fonksiyon icin ilk ${OPCODE_MAX_BYTES} bayt dosyadan okundu (RVA -> file offset bolum eslemesi).`);
+    } else {
+      notes.push("Opcode onizlemesi atlandi (dosya baytlari okunamadi ya da PE bolum tablosu yok).");
+    }
     notes.push('AOB deseninde "??" jokerleri rel32 cagri hedefleri / 32-bit immediates ve RIP-goreli pointer load alanlaridir.');
     if (result.functions?.note) notes.push(String(result.functions.note));
   }
@@ -1116,7 +1219,7 @@ export function generateCode(result: AnalysisResult, opts: CodegenOptions): Code
   if (want.strings && (result.strings ?? []).length === 0) notes.push("Analiz sonucunda dize verisi bulunamadi.");
   if (opts.language === "java") notes.push("Java: tek dosyada birden fazla public top-level sinif olabilir; javac dosya adi siniri icin ayri dosyalara bolunmesi gerekebilir.");
   if (opts.language === "python") notes.push("Python: struct siniflari _pack_ = 1 ile pakli yerlesim kullanir; bilinmeyen alan turleri c_ubyte dizisine indirgenir.");
-  if (opts.language === "json") notes.push("JSON ciktisi yorum icermez; ust veri meta alanindadir.");
+  if (opts.language === "json") notes.push("JSON ciktisi yorum icermez; ust veri meta alanindadir (opcodes/fileOffset fonksiyon girdilerinde).");
 
   return {
     language: opts.language,

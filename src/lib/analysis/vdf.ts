@@ -458,3 +458,32 @@ export function summarizeVdf(doc: VdfDoc): { keyCount: number; maxDepth: number;
   walk(doc.root);
   return { keyCount: doc.meta.keyCount, maxDepth: doc.meta.maxDepth, sampleKeys };
 }
+
+/** Canli yazma dogrulamasi: yeniden okunan dokumda her edit kalicilasmis mi? */
+export function verifyVdfEdits(
+  doc: VdfDoc,
+  edits: { path: string; value: string }[],
+): { verified: boolean; errors: string[] } {
+  const errors: string[] = [];
+  for (const e of edits) {
+    try {
+      const segs = e.path.split(".").map((s) => s.trim()).filter(Boolean);
+      if (segs.length === 0) throw new Error("bos yol");
+      let block = doc.root;
+      for (let i = 0; i < segs.length - 1; i++) {
+        const next = block[segs[i]!];
+        if (!next) throw new Error(`anahtar bulunamadi: ${segs.slice(0, i + 1).join(".")}`);
+        if (!next.c) throw new Error(`aradaki anahtar blok degil: ${segs.slice(0, i + 1).join(".")}`);
+        block = next.c;
+      }
+      const target = block[segs[segs.length - 1]!];
+      if (!target) throw new Error(`anahtar bulunamadi: ${e.path}`);
+      if (target.v !== e.value) {
+        errors.push(`${e.path}: deger kalicilasmadi (dosyada "${target.v}", beklenen "${e.value}")`);
+      }
+    } catch (err) {
+      errors.push(`${e.path}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return { verified: errors.length === 0, errors };
+}

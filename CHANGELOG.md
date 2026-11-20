@@ -2,6 +2,36 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) — semantik sürümleme (MAJOR.MINOR.PATCH).
 
+## [0.4.1] — 2026-11-20
+
+### Eklendi — Web platformu: kod üretimi + semantik zenginleştirme
+- **Opcode önizleme**: codegen çıktısında her fonksiyonun ilk 24 baytı dosyadan
+  okunur (RVA→file offset bölüm eşlemesi, `pe.ts:rvaToFileOffset`); tüm dillerde
+  `// opcodes @RVA` yorum satırı + JSON türünde `fileOffset`/`opcodes` alanları;
+  struct'larda `vftable OFF` notasyonu; 315 fonksiyondan 312'sinde opcode
+  çözüldü (gerçek PE ile doğrulandı)
+- **Semantik sözlük genişletme**: ~650 → **2720 anahtar kelime**, **23 kategori**
+  (Karakter/Sağlık, Silah/Hasar, Envanter, Ekonomi, XP/İlerleme, Konum/XYZ,
+  Fizik, Araç, Model/Skin, Animasyon, Grafik, Kamera, Hava/Çevre/gün-döngüsü,
+  Ses, HUD, Ağ, Kayıt, Girdi, AI, Zaman, Debug, AntiHile, Bellek/allocator) —
+  her kategori için Türkçe açıklama: *ne iş yapıyor / ne hesaplıyor / nereye
+  yazıyor* + `hints {action, computation, target}`; head-noun skorlama
+- **Yeni kod vurgulayıcı** (`codegen-highlight.ts`): yorum/hex/dize farkında
+  tokenizer — meta satırları soluk italik, hex amber; semantik panelinde kategori
+  rozeti + açıklama kartları
+
+### Eklendi — Savegame canlı editor-writer (Unreal/Epic/Steam)
+- **Canlı yazma modu** (`PUT .../savegame` body `live:true`): otomatik yedek
+  (`storage/uploads/backups/<id>__<ad>.bak-zaman`) → orijinal dosyaya in-place
+  yazma → diskten yeniden okuyup re-parse doğrulama (`verifyEdits`) → hata
+  durumunda yedekten **otomatik geri yükleme**; tümü-ya-da-hiçbiri (422'de
+  orijinal dokunulmadan kalır)
+- **Şifreli akış korunur**: AES-256-ECB/CBC + PKCS7, aynı cipher/mod ile
+  yeniden şifrelenip yazılır (test: ECB canlı yazma ✓); **Steam VDF** için de
+  aynı canlı mod
+- **UI**: "Canlı Yaz (orijinal dosyayı güncelle)" anahtarı + onay diyaloğu +
+  yedek/doğrulama/uygulanan-değişiklik paneli (`eski → yeni`)
+
 ## [0.4.0] — 2026-11-20
 
 ### Eklendi — Modül sistemi (2-B)

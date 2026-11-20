@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { tokenizeCodegenLine } from "@/lib/codegen-highlight";
 import {
   explainEnum,
   explainFunction,
@@ -112,11 +113,26 @@ function categoryBadgeClass(cat: string): string {
   if (cat.includes("Saglik") || cat.includes("Karakter")) return "border-red-500/40 text-red-300 bg-red-500/10";
   if (cat.includes("Silah") || cat.includes("Hasar")) return "border-orange-500/40 text-orange-300 bg-orange-500/10";
   if (cat.includes("Ekonomi") || cat.includes("Para")) return "border-yellow-500/40 text-yellow-300 bg-yellow-500/10";
+  if (cat.includes("Ilerleme") || cat.includes("Seviye")) return "border-lime-500/40 text-lime-300 bg-lime-500/10";
+  if (cat.includes("Envanter")) return "border-amber-500/40 text-amber-300 bg-amber-500/10";
   if (cat.includes("Konum") || cat.includes("Koordinat")) return "border-sky-500/40 text-sky-300 bg-sky-500/10";
   if (cat.includes("Hareket") || cat.includes("Fizik")) return "border-cyan-500/40 text-cyan-300 bg-cyan-500/10";
-  if (cat.includes("Gorsel") || cat.includes("Grafik") || cat.includes("Animasyon")) return "border-fuchsia-500/40 text-fuchsia-300 bg-fuchsia-500/10";
-  if (cat.includes("Ag") || cat.includes("Online")) return "border-emerald-500/40 text-emerald-300 bg-emerald-500/10";
-  if (cat.includes("AntiHile") || cat.includes("Koruma")) return "border-rose-500/40 text-rose-300 bg-rose-500/10";
+  if (cat.includes("Arac")) return "border-indigo-500/40 text-indigo-300 bg-indigo-500/10";
+  if (cat.includes("Gorsel")) return "border-fuchsia-500/40 text-fuchsia-300 bg-fuchsia-500/10";
+  if (cat.includes("Animasyon")) return "border-pink-500/40 text-pink-300 bg-pink-500/10";
+  if (cat.includes("Grafik")) return "border-purple-500/40 text-purple-300 bg-purple-500/10";
+  if (cat.includes("Kamera")) return "border-violet-500/40 text-violet-300 bg-violet-500/10";
+  if (cat.includes("Hava")) return "border-blue-500/40 text-blue-300 bg-blue-500/10";
+  if (cat.includes("Ses")) return "border-teal-500/40 text-teal-300 bg-teal-500/10";
+  if (cat.includes("Arayuz") || cat.includes("HUD")) return "border-emerald-500/40 text-emerald-300 bg-emerald-500/10";
+  if (cat.includes("Ag") || cat.includes("Online")) return "border-green-500/40 text-green-300 bg-green-500/10";
+  if (cat.includes("Kayit")) return "border-stone-500/40 text-stone-300 bg-stone-500/10";
+  if (cat.includes("Girdi")) return "border-slate-500/40 text-slate-300 bg-slate-500/10";
+  if (cat.includes("Yapay")) return "border-rose-500/40 text-rose-300 bg-rose-500/10";
+  if (cat.includes("Zaman")) return "border-orange-600/40 text-orange-200 bg-orange-600/10";
+  if (cat.includes("Debug") || cat.includes("Gelistirici")) return "border-zinc-400/40 text-zinc-200 bg-zinc-400/10";
+  if (cat.includes("AntiHile") || cat.includes("Koruma")) return "border-rose-600/40 text-rose-300 bg-rose-600/10";
+  if (cat.includes("Bellek")) return "border-cyan-600/40 text-cyan-200 bg-cyan-600/10";
   return "border-zinc-600 text-zinc-300 bg-zinc-500/10";
 }
 
@@ -127,6 +143,8 @@ export default function CodegenTab({ uploadId, result }: { uploadId: string; res
   const [filter, setFilter] = useState("");
   const [content, setContent] = useState("");
   const [filename, setFilename] = useState("");
+  const [metaNotes, setMetaNotes] = useState<string[]>([]);
+  const [itemCount, setItemCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [aiText, setAiText] = useState<string | null>(null);
@@ -215,17 +233,30 @@ export default function CodegenTab({ uploadId, result }: { uploadId: string; res
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ language, kind, filter: filter || undefined, limit: 500 }),
       });
-      const d = (await res.json()) as { ok: boolean; content?: string; filename?: string; error?: string };
+      const d = (await res.json()) as {
+        ok: boolean;
+        content?: string;
+        filename?: string;
+        error?: string;
+        stats?: { items: number; truncated?: boolean };
+        notes?: string[];
+      };
       if (d.ok && typeof d.content === "string") {
         setContent(d.content);
         setFilename(d.filename ?? "");
+        setMetaNotes((d.notes ?? []).slice(0, 4));
+        setItemCount(d.stats?.items ?? null);
       } else {
         setContent(`// ${d.error ?? "kod uretimi basarisiz"}`);
         setFilename("");
+        setMetaNotes([]);
+        setItemCount(null);
       }
     } catch {
       setContent("// kod uretimi hatasi (ag)");
       setFilename("");
+      setMetaNotes([]);
+      setItemCount(null);
     } finally {
       setLoading(false);
     }
@@ -281,8 +312,18 @@ export default function CodegenTab({ uploadId, result }: { uploadId: string; res
     <Badge variant="outline" className={`text-[10px] ${categoryBadgeClass(selected.sem.category)}`}>
       <BadgeCheck className="mr-1 h-3 w-3" />
       {selected.sem.category} · guven {Math.round(selected.sem.confidence * 100)}%
+      {selected.sem.categoryId ? ` · ${selected.sem.categoryId}` : ""}
     </Badge>
   ) : null;
+
+  // --- kod vurgulama: yorum satirlari (RVA/AOB/opcodes meta) silik italik,
+  // hex sayilar ve dizeler renkli; cok buyuk ciktilarda duz metin doner ---
+  const codeLines = useMemo(() => content.split("\n"), [content]);
+  const highlight = codeLines.length <= 3500;
+  const highlightedLines = useMemo(
+    () => (highlight ? codeLines.map((line) => tokenizeCodegenLine(line, language)) : null),
+    [codeLines, highlight, language],
+  );
 
   return (
     <div className="space-y-3">
@@ -357,6 +398,11 @@ export default function CodegenTab({ uploadId, result }: { uploadId: string; res
                 {filename || `codegen_${language}`}
               </p>
               <div className="flex items-center gap-1.5">
+                {itemCount !== null && (
+                  <Badge variant="outline" className="border-zinc-700 text-[9px] text-zinc-400">
+                    {itemCount} oge
+                  </Badge>
+                )}
                 <Button variant="outline" size="sm" className="h-7 border-zinc-700 px-2 text-[11px]" onClick={copyCode}>
                   {copied ? <Check className="mr-1 h-3 w-3 text-emerald-400" /> : <Copy className="mr-1 h-3 w-3" />}
                   Kopyala
@@ -367,11 +413,29 @@ export default function CodegenTab({ uploadId, result }: { uploadId: string; res
                 </Button>
               </div>
             </div>
-            <div className="max-h-[320px] overflow-auto scrollbar-thin">
+            {metaNotes.length > 0 && (
+              <div className="flex flex-wrap gap-x-3 gap-y-1 border-b border-zinc-800/60 bg-zinc-900/40 px-3 py-1.5">
+                {metaNotes.map((n, i) => (
+                  <span key={i} className="text-[10px] text-zinc-500">{n}</span>
+                ))}
+              </div>
+            )}
+            <div className="max-h-[460px] overflow-auto scrollbar-thin">
               {loading ? (
                 <p className="flex items-center gap-2 p-3 text-xs text-zinc-400">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" /> Kod uretiliyor...
                 </p>
+              ) : highlightedLines ? (
+                <pre className="whitespace-pre p-3 text-[11px] leading-relaxed text-zinc-300">
+                  {highlightedLines.map((tokens, i) => (
+                    <span key={i}>
+                      {tokens.map((t, j) => (
+                        <span key={j} className={t.cls ?? undefined}>{t.text}</span>
+                      ))}
+                      {"\n"}
+                    </span>
+                  ))}
+                </pre>
               ) : (
                 <pre className="whitespace-pre p-3 text-[11px] leading-relaxed text-zinc-300">{content}</pre>
               )}
@@ -398,6 +462,10 @@ export default function CodegenTab({ uploadId, result }: { uploadId: string; res
                 </Button>
               </div>
               <dl className="mt-2 space-y-1 text-[11px] leading-relaxed">
+                <div className="rounded-md border border-zinc-800 bg-zinc-900/60 px-2 py-1.5">
+                  <dt className="font-medium text-zinc-400">Kategori aciklamasi: </dt>
+                  <dd className="text-zinc-300">{selected.sem.description}</dd>
+                </div>
                 <div>
                   <dt className="inline font-medium text-zinc-400">Ozet: </dt>
                   <dd className="inline text-zinc-300">{selected.sem.summary}</dd>
@@ -410,6 +478,22 @@ export default function CodegenTab({ uploadId, result }: { uploadId: string; res
                   <dt className="inline font-medium text-zinc-400">Nereye isliyor: </dt>
                   <dd className="inline text-zinc-300">{selected.sem.writes}</dd>
                 </div>
+                {selected.sem.hints && (
+                  <div className="grid gap-x-3 gap-y-0.5 pt-0.5 sm:grid-cols-3">
+                    <div className="rounded border border-zinc-800 bg-zinc-900/40 px-2 py-1">
+                      <p className="text-[9px] uppercase tracking-wide text-zinc-500">Eylem</p>
+                      <p className="text-zinc-300">{selected.sem.hints.action}</p>
+                    </div>
+                    <div className="rounded border border-zinc-800 bg-zinc-900/40 px-2 py-1">
+                      <p className="text-[9px] uppercase tracking-wide text-zinc-500">Hesaplama</p>
+                      <p className="text-zinc-300">{selected.sem.hints.computation}</p>
+                    </div>
+                    <div className="rounded border border-zinc-800 bg-zinc-900/40 px-2 py-1">
+                      <p className="text-[9px] uppercase tracking-wide text-zinc-500">Hedef</p>
+                      <p className="text-zinc-300">{selected.sem.hints.target}</p>
+                    </div>
+                  </div>
+                )}
                 {selected.sem.tags.length > 0 && (
                   <div className="pt-0.5">
                     {selected.sem.tags.slice(0, 6).map((t) => (
