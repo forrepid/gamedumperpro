@@ -2,6 +2,48 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) — semantik sürümleme (MAJOR.MINOR.PATCH).
 
+## [0.4.0] — 2026-11-20
+
+### Eklendi — Modül sistemi (2-B)
+- **ModuleRegistry** (`src/core/ModuleRegistry.{h,cpp}`): motor geneli merkezi modül
+  kayıt sistemi — `EngineModule{name, version, description}` + idempotent
+  `Register()` + deterministik `RegisterBuiltins()`; mevcut 9 modül (core, sig,
+  ue, il2cpp, file, dump, hex, net, config @ 0.3.0) artık registry'de listelenir
+- **`--modules` CLI bayrağı**: hizalı NAME|VERSION|DESCRIPTION tablosu yazdırır
+
+### Eklendi — binfold modülü (2-A)
+- **`src/binfold/`** — [trumank/binfold](https://github.com/trumank/binfold) (MIT)
+  çekirdek algoritmalarının sıfır bağımlılık C++20 portu: RFC 4122 v5 GUID
+  (inline SHA-1), WARP fonksiyon GUID'i (64-byte blok digest'leri, adres sıralı),
+  x86 stateless maskeleme (E8/E9 rel32 + EB rel8), PE `.pdata` / ELF `STT_FUNC`
+  fonksiyon keşfi + E8 sweep fallback, child/parent-call kısıt hash'leri ve
+  iteratif fix-point eşleştirici
+- **`--bindiff <a> <b>` / `--bindiff-json`**: iki binary arası fonksiyon
+  eşleştirme + benzerlik yüzdesi (fonksiyon gövdesi + CDC byte benzerliği)
+- Gerçek 11 MB oyun ELF'i üzerinde doğrulandı: 1393/1393 eşleşme, yamalı
+  bölgeler doğru raporlandı
+
+### Eklendi — Entegrasyon araştırması (7 repo)
+- `docs/module-integration.md`: binfold, patternsleuth, UE5CEDumper, RE-UE4SS,
+  CUE4Parse, FModel, REFramework analiz matrisi (lisans uyarıları + öncelikli
+  port yol haritası; FModel GPL — kod kopyalama yok, temiz oda referansı)
+- `docs/modules.md`: modül sistemi mimarisi + yeni modül ekleme rehberi (TR)
+- `DumperPro/windows/` — Windows gerçek-makine test kiti: `build.bat` (MSVC),
+  `get-leechcore.ps1` (MemProcFS v5.19, canlı doğrulanmış indirme),
+  `test-device.bat` (4-testli PASS/FAIL baterisi), Türkçe README
+
+### Eklendi — 1b gerçek oyun dumpı doğrulaması
+- Gerçek Unity IL2CPP oyunu (LINE CTF 2023 "jumpit", metadata v27, 13.6 MB):
+  CLI uçtan uca — 2.682 tip, 16.542 metot, %91.1 adres çözümü, 47k satır SDK
+  (`research/dumps/TEST_REPORT.md`)
+
+### Düzeltildi
+- **LeechReader Linux çökmesi**: çift `dlerror()` çağrısı ikinci dönüşte NULL
+  verip `std::string(nullptr)` ile terminate ediyordu (kütüphane eksikken
+  exit 134); tek çağrıya sabitlendi
+- **binfold PE `RvaToOff` sentinel taşması**: `0xFFFFFFFF` sentinel'in u64
+  genişlemede `size - off` underflow'u tetiklemesi → `ValidOff()` kontrolü
+
 ## [0.3.1] — 2026-11-20
 
 ### Eklendi — CLI (1a/1b gerçek-dünya testleri)

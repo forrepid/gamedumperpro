@@ -661,7 +661,10 @@ std::unique_ptr<IMemoryReader> TryCreateLeechReader(const std::string& deviceStr
     // Resmi Linux derlemesi "leechcore.so" uretir; dagitimlarda "lib" onekli de olabilir
     void* hLib = dlopen("leechcore.so", RTLD_NOW | RTLD_LOCAL);
     if (!hLib) {
-        const std::string firstErr = dlerror() ? dlerror() : "bilinmeyen";
+        // dlerror() mesaji CAĞRIDA bir kez okunur ve sonra temizlenir; iki kez
+        // cagirmak ikinci donuste NULL verir (std::string(nullptr) -> crash).
+        const char* dlErr = dlerror();
+        const std::string firstErr = dlErr ? dlErr : "bilinmeyen";
         hLib = dlopen("libleechcore.so", RTLD_NOW | RTLD_LOCAL);
         if (!hLib) {
             g_leechLastError = "leechcore kutuphanesi yuklenemedi (" + firstErr + ")";

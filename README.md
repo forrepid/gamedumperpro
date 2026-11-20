@@ -73,13 +73,18 @@ bun run start
 ```bash
 # Linux / macOS — doğrudan derleme
 g++ -std=c++20 -O1 -I DumperPro/src -o DumperPro/DumperPro \
-    DumperPro/src/*.cpp DumperPro/src/*/*.cpp -lpthread
+    DumperPro/src/*.cpp DumperPro/src/*/*.cpp -lpthread -ldl
 
 # Windows — MSVC (x64 Native Tools Command Prompt)
 cl /std:c++20 /O1 /EHsc /I DumperPro\src DumperPro\src\*.cpp DumperPro\src\*\*.cpp /Fe:DumperPro.exe
 ```
 
 > Not: `--device` (LeechCore) modu Windows'ta `leechcore.dll` ister; Linux'ta `file://dump.bin` / `dump://x.dmp` cihaz string'leri çalışır. Detay: `DumperPro/docs/LEECH.md`.
+>
+> **Windows gerçek-makine test kiti (1a):** `DumperPro/windows/` — `build.bat`
+> (MSVC), `get-leechcore.ps1` (MemProcFS'ten leechcore.dll indirir),
+> `test-device.bat` (4-testli PASS/FAIL baterisi). Adım adım Türkçe rehber:
+> `DumperPro/windows/README.md` ve `docs/1A-WINDOWS-DEVICE-TEST.md`.
 
 ### 3) Test materyali (opsiyonel)
 
@@ -148,6 +153,11 @@ DumperPro --hex --process Game.exe --hex-patch "0x140001000=90" --hex-live
 # Gömülü web sunucu (tarayıcıdan yükleme)
 DumperPro --serve              # http://127.0.0.1:8420
 DumperPro --serve 9000
+
+# Modül sistemi + binary diff (binfold modülü)
+DumperPro --modules                        # kayıtlı tüm motor modülleri
+DumperPro --bindiff eski.dll yeni.dll      # WARP GUID eşleştirme + benzerlik
+DumperPro --bindiff a.so b.so --bindiff-json > matches.json
 ```
 
 Tüm bayraklar: `DumperPro --help`

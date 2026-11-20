@@ -33,6 +33,8 @@
 #include "hex/HexTool.h"
 #include "il2cpp/Il2CppBinary.h"
 #include "il2cpp/Il2CppDummyDll.h"
+#include "core/ModuleRegistry.h"
+#include "binfold/BinFold.h"
 
 #include <iostream>
 #include <ctime>
@@ -68,6 +70,11 @@ struct Options {
     bool hexLive = false;                   // yamalari canli prosese uygula
     int hexBits = 64;                       // kod gorunumu bit
     int hexRows = 16;                       // gorunum satir sayisi
+
+    // ---- binfold diff mode (binfold module, docs/modules.md) ----
+    fs::path bindiffA;                      // --bindiff <A> <B> (reference)
+    fs::path bindiffB;                      //                (target)
+    fs::path bindiffJson;                   // opsiyonel JSON ciktisi
 };
 
 static void PrintUsage() {
@@ -84,6 +91,7 @@ static void PrintUsage() {
         "  DumperPro.exe --file base.vdex | base.odex  ART container (vdex/oat/cdex)\n"
         "  DumperPro.exe --device \"file://dump.bin\"    LeechCore device / dump file (docs/LEECH.md)\n"
         "  DumperPro.exe --serve                       local web upload mode (default port 8420)\n"
+        "  DumperPro.exe --bindiff old.exe new.exe     binary diff: function GUIDs + similarity\n"
         "\n"
         "IL2CPP binary matching (Il2CppDumper second half):\n"
         "  DumperPro.exe --file GameAssembly.dll --metadata global-metadata.dat\n"
@@ -115,6 +123,10 @@ static void PrintUsage() {
         "  --device <lc>         LeechCore device (fpga / file://dump.bin / dump://x.dmp - see docs/LEECH.md)\n"
         "  --kernel              kernel-assisted memory access (see docs/KERNEL.md)\n"
         "  --serve [port]        online file upload: open http://127.0.0.1:<port> in a browser\n"
+        "  --bindiff <A> <B>     binfold diff of two binaries (WARP function GUIDs,\n"
+        "                        call-graph constraint matching, similarity score)\n"
+        "  --bindiff-json <f>    with --bindiff: also write a machine-readable JSON report\n"
+        "  --modules             list engine modules (registry) and exit\n"
         "  --json                machine-readable JSON outputs (names.json, objects.json,\n"
         "                        analysis_report.json) alongside the text dumps\n"
         "  --probe <n>           offset probe sample count (default 400)\n"
@@ -134,6 +146,11 @@ static void PrintProfiles() {
     }
 }
 
+static void PrintModules() {
+    fprintf(stdout, "DumperPro engine modules:\n\n");
+    fprintf(stdout, "%s", ModuleRegistry::BuildTable().c_str());
+}
+
 static bool ParseArgs(int argc, char** argv, Options& o, std::string& err) {
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -144,6 +161,7 @@ static bool ParseArgs(int argc, char** argv, Options& o, std::string& err) {
         };
         if (a == "--help" || a == "-h") { PrintUsage(); exit(0); }
         else if (a == "--list-profiles") { PrintProfiles(); exit(0); }
+        else if (a == "--modules") { PrintModules(); exit(0); }
         else if (a == "--process") { if (!next(o.process)) return false; }
         else if (a == "--pid") {
             std::string v; if (!next(v)) return false;
@@ -153,6 +171,14 @@ static bool ParseArgs(int argc, char** argv, Options& o, std::string& err) {
         else if (a == "--file") { std::string v; if (!next(v)) return false; o.file = v; }
         else if (a == "--device") { if (!next(o.device)) return false; }
         else if (a == "--metadata") { std::string v; if (!next(v)) return false; o.metadata = v; }
+        else if (a == "--bindiff") {
+            std::string v1, v2;
+            if (!next(v1)) return false;
+            if (!next(v2)) return false;
+            o.bindiffA = v1;
+            o.bindiffB = v2;
+        }
+        else if (a == "--bindiff-json") { std::string v; if (!next(v)) return false; o.bindiffJson = v; }
         else if (a == "--hex") { o.hex = true; }
         else if (a == "--hex-view") { if (!next(o.hexViews.emplace_back())) return false; }
         else if (a == "--hex-code") { if (!next(o.hexCodes.emplace_back())) return false; }
@@ -196,9 +222,11 @@ static bool ParseArgs(int argc, char** argv, Options& o, std::string& err) {
     }
 
     int modes = (o.process.empty() ? 0 : 1) + (o.pid ? 1 : 0) + (o.file.empty() ? 0 : 1) +
-                (o.device.empty() ? 0 : 1) + (o.serve ? 1 : 0);
-    if (modes == 0) { err = "no target: use --process, --pid, --file, --device or --serve"; return false; }
-    if (modes > 1) { err = "only one of --process / --pid / --file / --device / --serve can be used"; return false; }
+                (o.device.empty() ? 0 : 1) + (o.serve ? 1 : 0) + (o.bindiffA.empty() ? 0 : 1);
+    if (modes == 0) { err = "no target: use --process, --pid, --file, --device, --serve or --bindiff"; return false; }
+    if (modes > 1) { err = "only one of --process / --pid / --file / --device / --serve / --bindiff can be used"; return false; }
+    if (!o.bindiffA.empty() && o.bindiffB.empty()) { err = "--bindiff needs two files: --bindiff <fileA> <fileB>"; return false; }
+    if (!o.bindiffJson.empty() && o.bindiffA.empty()) { err = "--bindiff-json requires --bindiff"; return false; }
     // hex modu bir hedef gerektirir; serve ile kullanilamaz
     if (o.hex && !o.device.empty()) { err = "--hex cannot be combined with --device (no module model at device level)"; return false; }
     const bool anyHexAction = !o.hexViews.empty() || !o.hexCodes.empty() || !o.hexBinaries.empty() ||
@@ -450,6 +478,49 @@ static void WriteVTableFuncsTxt(const fs::path& outDir, const std::vector<VTResu
 }
 
 // ---------------------------------------------------------------------------
+// --bindiff modu: binfold modulu - iki binary arasinda fonksiyon seviyesinde
+// diff + benzerlik (WARP GUID'leri + call-graph constraint eslestirme).
+// Detay: docs/modules.md ve src/binfold/BinFold.h
+// ---------------------------------------------------------------------------
+static int RunBindiffMode(const Options& opt) {
+    Log::Banner("DumperPro - BinFold Binary Diff");
+
+    std::vector<u8> a, b;
+    std::string err;
+    if (!binfold::BinFold::LoadFile(opt.bindiffA, a, err)) {
+        FailWithHint(err, "check the file path and size (cap 1 GiB)");
+        return 2;
+    }
+    if (!binfold::BinFold::LoadFile(opt.bindiffB, b, err)) {
+        FailWithHint(err, "check the file path and size (cap 1 GiB)");
+        return 2;
+    }
+    Log::Info("File A (reference): %s (%s)", opt.bindiffA.string().c_str(), str::HumanSize(a.size()).c_str());
+    Log::Info("File B (target)   : %s (%s)", opt.bindiffB.string().c_str(), str::HumanSize(b.size()).c_str());
+
+    binfold::BfDiffResult res;
+    if (!binfold::BinFold::Diff(a.data(), a.size(), b.data(), b.size(), res, err)) {
+        FailWithHint("binfold diff failed: " + err, "");
+        return 4;
+    }
+
+    Log::Raw(binfold::BinFold::BuildReport(res, opt.bindiffA.filename().string(),
+                                           opt.bindiffB.filename().string()));
+
+    if (!opt.bindiffJson.empty()) {
+        std::ofstream out(opt.bindiffJson, std::ios::binary | std::ios::trunc);
+        if (!out.good()) {
+            FailWithHint("cannot write JSON: " + opt.bindiffJson.string(), "");
+            return 2;
+        }
+        out << binfold::BinFold::BuildJson(res, opt.bindiffA.filename().string(),
+                                           opt.bindiffB.filename().string());
+        Log::Ok("JSON written: %s", opt.bindiffJson.string().c_str());
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // --hex modu: live code/hex/byte/binary/AOB view-editor-save
 // ---------------------------------------------------------------------------
 static bool ParseOffRows(const std::string& spec, u64& off, int& rows) {
@@ -635,6 +706,11 @@ int main(int argc, char** argv) {
         return 1;
     }
     Log::SetVerbose(opt.verbose);
+
+    // ---- binfold diff modu: iki binary karsilastirma (binfold module) ----
+    if (!opt.bindiffA.empty()) {
+        return RunBindiffMode(opt);
+    }
 
     // ---- hex modu: live code/hex/byte/binary/AOB view-editor-save ----
     if (opt.hex) {

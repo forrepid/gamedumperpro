@@ -74,6 +74,13 @@ server.log
 # --- Build artifacts ---
 /DumperPro/build_test/
 /DumperPro/bin/
+/DumperPro/DumperPro
+/DumperPro/DumperPro.exe
+/DumperPro/obj/
+/DumperPro/windows/out_t*/
+/DumperPro/windows/testlog_t*.log
+/DumperPro/windows/test_dump.bin
+/DumperPro/windows/notepad_test.exe
 
 # --- OS junk ---
 Thumbs.db
