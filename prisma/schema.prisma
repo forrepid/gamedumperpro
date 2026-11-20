@@ -1,0 +1,43 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// DumperPro Online - yuklenen dosyalar ve analiz sonuclari
+// ----------------------------------------------------------------------------
+
+model Upload {
+  id        String    @id // crypto.randomUUID() (dosya adinda da kullanilir)
+  fileName  String    // orijinal dosya adi
+  savedPath String    // storage/uploads/<id>__<safeName> | klasorde "-"
+  size      Int       // bayt
+  mime      String?
+  source    String    @default("upload") // upload | extract | folder
+  parentId  String?   // APK icinden cikarilan dosyada: ana yukleme id'si; klasor grubunda: klasor kaydi
+  relPath   String?   // klasor yuklemesinde: orijinal goreceli yol (klasor/dosya.ext)
+  status    String    @default("pending") // analyzing | done | error
+  error     String?
+  createdAt DateTime  @default(now())
+  analysis  Analysis?
+
+  @@index([createdAt])
+  @@index([parentId])
+}
+
+model Analysis {
+  id            String   @id @default(cuid())
+  uploadId      String   @unique
+  upload        Upload   @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+  kind          String   // pe | apk | zip | elf | dex | unknown
+  engine        String?  // UE4 | UE5 | Unity | Godot | Source | ...
+  engineVersion String?  // 4.27.2 / 5.3.2 ...
+  summary       String   // tam JSON sonuc
+  report        String   // insan okur TXT raporu
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
