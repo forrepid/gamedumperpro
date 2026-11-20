@@ -285,6 +285,7 @@ public:
     bool IsLiveProcess() const override { return true; }
     bool IsOK() const override { return ok_; }
     std::string LastError() const override { return lastErr_; }
+    u64 MaxAddress() const override { return paMax_; } // LC_OPT_CORE_ADDR_MAX
 
 private:
     HMODULE hMod_     = nullptr;
@@ -626,6 +627,7 @@ public:
     bool IsLiveProcess() const override { return true; }
     bool IsOK() const override { return ok_; }
     std::string LastError() const override { return lastErr_; }
+    u64 MaxAddress() const override { return paMax_; } // LC_OPT_CORE_ADDR_MAX
 
 private:
     void*   hLib_        = nullptr;

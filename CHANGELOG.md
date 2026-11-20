@@ -2,6 +2,44 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) — semantik sürümleme (MAJOR.MINOR.PATCH).
 
+## [0.3.1] — 2026-11-20
+
+### Eklendi — CLI (1a/1b gerçek-dünya testleri)
+- **Windows LeechCore test kiti (1a)**: `scripts/windows/1a-device-test.ps1` (T1–T4
+  otomatik bateri: file:// salt-okunur, write=1, zarif-hata, opsiyonel FPGA),
+  `scripts/windows/1a-leech-harness.cpp` (LcWrite round-trip + hizasız okuma/yazma
+  doğrulaması), `docs/1A-WINDOWS-DEVICE-TEST.md` (adım adım Türkçe rehber)
+- **1b canlı SDK scripti**: `scripts/windows/1b-live-dump.ps1` — gerçek UE5
+  sürecinde GNames+GObjects+SDK üretimi ve çıktı denetimi
+- **paMax-uyarlanabilir cihaz tarama penceresi**: `IMemoryReader::MaxAddress()`
+  eklendi; `--device` modunda pencere cihazın raporladığı maksimum fiziksel
+  adrese kısıtlanır (üst kap 512 MiB; paMax yoksa eski 64 MiB). UE5 shipping
+  modül dump'ları (>64 MiB) artık tam taranır; 16 MB dosya cihazında
+  "chunk unreadable" uyarıları 0'a düştü
+- **Kısmi çıktı**: GObjects bulunamazsa bile GNames çözüldüyse `Names.txt` +
+  `names.json` + signature dosyaları yazılır ve canlı-süreç yönlendirmesi verilir
+  (eski davranış: hiçbir çıktı yok)
+- **1b test raporu**: `docs/1B-UE5-SDK-TEST.md` — gerçek UE5.1 oyunu (The
+  Document Demon, itch.io'dan otomatik indirildi) üzerinde uçtan uca test,
+  Fling (UE4 paylaşılan build) karşılaştırması, soğuk-görüntü sınırları
+
+### Düzeltildi — 1b'de yakalanan gerçek hatalar
+- **SigFinder→parser kablolaması**: `FindGNames`/`FindGObjects` bulunan adayı
+  offsets yapısına yazmıyordu; `NameArray/ObjectArray::TryInit` "unresolved"
+  hatası veriyordu (yalnızca games.ini ile adres verilirse çalışıyordu).
+  Artık çözülen VA `off.GNamesVA`/`off.GObjectsVA`'ya otomatik yazılır
+- **FNamePool yanlış-pozitif doğrulaması**: soğuk exe'de sıfır-dolgulu .data
+  bölgesi 62.207 çöp "isim" üretti. Düzeltmeler: (1) "None" çapası — FName
+  index 0 her zaman `"None"`'dur, ilk giriş buna uymayan aday reddedilir;
+  (2) `strictWide` — probe modunda wide (UTF-16) girişler de yazdırılabilirlik
+  kontrolüne girer; (3) çünkü gerçek havuz runtime verisidir, soğuk dosyada
+  geçen her aday tanım gereği yanlış pozitiftir ve artık dürüstçe reddedilir
+
+### Doğrulandı
+- Linux'ta gerçek LeechCore (ufrisk master kaynaktan `leechcore.so`) ile uçtan
+  uca canlı test: dlopen/LcCreate/LcRead/LcWrite round-trip/hizasız I/O/paMax
+  koruması — ALL-PASS (`DumperPro/docs/LEECH.md` §9.3)
+
 ## [0.3.0] — 2026-11-20
 
 ### Eklendi — Web platformu

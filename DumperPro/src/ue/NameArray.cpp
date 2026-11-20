@@ -39,8 +39,13 @@ struct EntryWalk {
 
 // Walk variable-length name entries inside a LOCAL block buffer.
 // lenShift: 6 = FNamePool header (probe hash bits), 1 = legacy header.
+// strictWide: probe mode - also flag implausible wide entries as bad (a real
+// pool's first block contains only ANSI core names, so garbage data that
+// smuggles itself through as "wide" entries gets rejected; 1b regression,
+// real UE5.1 shipping binary, 2026-11-20).
 EntryWalk WalkEntriesLocal(const u8* data, u32 size, u32 entryAlign, u32 lenShift,
-                           std::vector<std::string>* sink, u32 maxEntries) {
+                           std::vector<std::string>* sink, u32 maxEntries,
+                           bool strictWide = false) {
     EntryWalk w;
     u32 off = 0;
     while (off + 2 <= size && (maxEntries == 0 || w.count < maxEntries)) {
@@ -65,6 +70,16 @@ EntryWalk WalkEntriesLocal(const u8* data, u32 size, u32 entryAlign, u32 lenShif
         }
         if (len > 0 && !wide && !str::IsPrintableAscii((const char*)data + off + 2, dataBytes)) {
             w.bad++;
+        }
+        if (len > 0 && wide && strictWide) {
+            // probe mode: a plausible wide name is printable ASCII (non-ASCII
+            // wide names never appear in a pool's FIRST block)
+            const u16* ch = (const u16*)(data + off + 2);
+            bool plausible = true;
+            for (size_t i = 0; i < (size_t)len; i++) {
+                if (ch[i] < 0x20 || ch[i] > 0x7E) { plausible = false; break; }
+            }
+            if (!plausible) w.bad++;
         }
         w.count++;
         w.lastOff = off;
@@ -91,7 +106,20 @@ bool ProbeFirstBlock(IMemoryReader& r, u64 gNamesVA, u32 blockSize, u32 entryAli
         if (why && why->empty()) *why = "first block unreadable";
         return false;
     }
-    EntryWalk w = WalkEntriesLocal(buf, n, entryAlign, lenShift, nullptr, 40);
+    // "None" anchor: FName index 0 of every UE name pool is "None" (created
+    // first by FName's static init). A candidate whose first entry does not
+    // decode to ANSI "None" is a false positive - garbage .data cannot fake
+    // this anchor. Applies to the FNamePool header (lenShift 6) only.
+    if (lenShift == 6) {
+        u16 h0 = 0;
+        memcpy(&h0, buf, 2);
+        const u32 len0 = (u32)h0 >> lenShift;
+        if ((h0 & 1) || len0 != 4 || memcmp(buf + 2, "None", 4) != 0) {
+            if (why && why->empty()) *why = "first entry is not ANSI 'None' (pool anchor)";
+            return false;
+        }
+    }
+    EntryWalk w = WalkEntriesLocal(buf, n, entryAlign, lenShift, nullptr, 40, true);
     if (w.count < 8) {
         if (why && why->empty()) *why = "too few entries in first block";
         return false;

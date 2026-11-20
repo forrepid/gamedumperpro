@@ -133,10 +133,12 @@ Bu yuzden DumperPro'da:
   (heuristic struct scan) devre disi** kalir; yalnizca desen tabanli (pattern)
   imza taramasi calisir.
 - main.cpp bos modul listesini zarifce karsilar: net bir uyari yazdirir ve
-  **0x10000 adresinden (okuyucunun near-null korumasi) itibaren 64 MiB'lik en
-  iyi caba (best-effort) penceresi** uzerinde GObjects/GNames imza taramasi
-  yapar; UE surumu varsa ham ASCII `++UE5+Release-X.Y` isaretleyicilerinden
-  (markers) sezer. Bulunamazsa standart ipucu mesajlariyla temiz cikar.
+  **0x10000 adresinden (okuyucunun near-null korumasi) itibaren cihazin
+  raporladigi maksimum fiziksel adrese (paMax) kadar, ust siniri 512 MiB olan
+  en iyi caba (best-effort) penceresi** uzerinde GObjects/GNames imza taramasi
+  yapar (paMax raporlanmiyorsa eski davranis: 64 MiB); UE surumu varsa ham
+  ASCII `++UE5+Release-X.Y` isaretleyicilerinden (markers) sezer. Bulunamazsa
+  standart ipucu mesajlariyla temiz cikar.
 - Tam SDK icin iki gecerli yol vardir: (a) MemProcFS duzeyinde modul bilgisi
   (vmm.dll entegrasyonu - yol haritasindadir), veya (b) ham dump'i `--file`
   ile acmak: `DumperPro.exe --file dump.mem` PE basligini bulabilirse modul
@@ -218,9 +220,10 @@ cihazlarinin semantigini ayni tutar.
 
 - **Cihaz duzeyi**: modul/VAD haritasi yoktur; modul duzeyi analiz icin bkz.
   bolum 4. `--module` bayragi device modunda anlamsizdir ve uyarilir.
-- **64 MiB penceresi**: en iyi caba (best-effort) tarama sinirlidir; gercek
-  oyunda GObjects/GNames genellikle yuksek adreslerdedir. Tam kapsam icin
-  memmap eslemesiyle genis aralik ya da `--file` yolunu kullanin.
+- **Tarama penceresi**: en iyi caba (best-effort) tarama 0x10000'dan baslar;
+  ust sinir cihaz paMax'i (ust kap: 512 MiB), paMax raporlanmiyorsa 64 MiB.
+  Gercek oyunda GObjects/GNames genellikle yuksek adreslerdedir. Tam kapsam
+  icin memmap eslemesiyle genis aralik ya da `--file` yolunu kullanin.
 - **Yazma**: `LcWrite` mevcuttur ama cihaz `fWritable=0` bildirirse DumperPro
   yazmayi red eder. Donanima yazma (DMA) hedef sistemin kararliiligini
   bozabilir; yalnizca kendi sisteminizde, yedek almis olarak deneyin.
@@ -250,7 +253,7 @@ cihazlarinin semantigini ayni tutar.
 | Okuma | `LcRead` - 1 MiB parca, near-null korumasi (PA < 0x10000 red), tasma kontrolu |
 | Yazma | `LcWrite` (v2.23'te mevcut) - `fWritable=0` ise red |
 | Moduller | Bos `{}` - cihaz duzeyi API; modul bilgisi MemProcFS `vmm.dll` katmanindadir |
-| Bos modul davranisi | Uyari + 0x10000'dan 64 MiB en iyi caba (best-effort) imza taramasi; sezgisel taramalar kapali |
+| Bos modul davranisi | Uyari + 0x10000'dan paMax'a kadar (ust kap 512 MiB; yoksa 64 MiB) en iyi caba (best-effort) imza taramasi; sezgisel taramalar kapali |
 | Lisans | LeechCore GPL-3.0, MemProcFS AGPL-3.0 (dinamik baglama notu: bolum 5) |
 | Web portu | `src/lib/analysis/mem.ts` (dosya cihazi semantigi; canli DMA yalnizca Windows `--device`) |
 | Dokuman | bu dosya (`docs/LEECH.md`) |
@@ -311,3 +314,24 @@ Testte dogrulananlar (gercek leechcore.so uzerinden):
 `TryCreateLeechReader`'i dogrudan cagiran bağımsız dogrulama duzenegi
 (`/tmp/leech_harness.cpp` modeli) ile Read imza + Write round-trip testleri
 tekrarlanabilir; DumperPro ikilisi icin ek bagimlilik gerekmez.
+
+### 9.3 Yeniden dogrulama (2026-11-20) + paMax-uyarlanabilir tarama penceresi
+
+Derleme artiklari temizlendikten sonra tum hat sifirdan yeniden kuruldu ve
+tum testler tekrar ALL-PASS aldi:
+
+- `leechcore.so` (ufrisk master) yeniden derlendi. Not: Makefile
+  `pkg-config libusb-1.0` cagirir; root'suz ortamda `libusb-1.0-0-dev` deb'i
+  `dpkg-deb -x` ile acilir ve duzeltilmis prefix'li bir `.pc` dosyasiyla
+  `PKG_CONFIG_PATH` gosterilir. Ayrica dev paketindeki `libusb-1.0.so`
+  symlink'i kirdir (runtime paketi ayridir); sistem runtime'ina isaret
+  ettirilmezse linker non-PIC `.a`'ya duser ve
+  `failed to set dynamic section sizes: bad value` alinir.
+- `IMemoryReader` arayuzune `MaxAddress()` eklendi (LeechReader her iki daldan
+  da paMax dondurur). Device modu tarama penceresi artik paMax'a kistirilir
+  (ust kap 512 MiB; paMax yoksa eski 64 MiB). 16 MB'lik dosya cihazinda onceki
+  49/64 "chunk unreadable" uyarisi 0'a dustu; modul dump'lari (UE5 shipping
+  ekseriyetle >64 MiB) artik tam taranir.
+- Ayni gun Windows test kiti eklendi: `scripts/windows/1a-device-test.ps1`
+  (T1-T4 baterisi) + `scripts/windows/1a-leech-harness.cpp` (LcWrite
+  round-trip) + `docs/1A-WINDOWS-DEVICE-TEST.md` (adim adim rehber).

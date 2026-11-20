@@ -23,6 +23,10 @@ public:
     virtual bool IsLiveProcess() const = 0;
     virtual bool IsOK() const = 0;
     virtual std::string LastError() const = 0;
+    // Highest valid address the reader can serve, or 0 = unknown/not applicable.
+    // LeechCore reports the device paMax (LC_OPT_CORE_ADDR_MAX); other backends
+    // leave the default (0) and callers fall back to their own limits.
+    virtual u64 MaxAddress() const { return 0; }
 
     inline bool ReadU8 (u64 a, u8& v)  { return Read(a, &v, 1); }
     inline bool ReadU16(u64 a, u16& v) { return Read(a, &v, 2); }

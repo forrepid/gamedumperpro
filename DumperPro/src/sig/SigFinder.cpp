@@ -346,6 +346,20 @@ u64 SigFinder::HeuristicScan_GWorld(SigHit& hit, std::string* via) {
 // ---------------------------------------------------------------------------
 
 u64 SigFinder::FindGNames(std::string* via) {
+    // Resolve, then feed the candidate VA into off_.GNamesVA so that
+    // NameArray::TryInit (which reads off.GNamesVA) can parse it. Without
+    // this wiring a freshly discovered sig/heuristic candidate is returned
+    // but the parser still sees "unresolved" (real-world UE5.1 shipping
+    // binary regression caught in 1b, 2026-11-20).
+    u64 va = FindGNamesImpl(via);
+    if (va && off_.GNamesVA != va) {
+        off_.GNamesVA = va;
+        Log::Debug("SigFinder[GNames]: candidate VA wired to off.GNamesVA (%s)", Hex(va).c_str());
+    }
+    return va;
+}
+
+u64 SigFinder::FindGNamesImpl(std::string* via) {
     const auto validate = &ValidateGNames;
 
     // 1. profile-provided address (games.ini [Game] gnames=... already applied to off_)
@@ -379,6 +393,16 @@ u64 SigFinder::FindGNames(std::string* via) {
 }
 
 u64 SigFinder::FindGObjects(std::string* via) {
+    // Same wiring as FindGNames: ObjectArray::TryInit reads off.GObjectsVA.
+    u64 va = FindGObjectsImpl(via);
+    if (va && off_.GObjectsVA != va) {
+        off_.GObjectsVA = va;
+        Log::Debug("SigFinder[GObjects]: candidate VA wired to off.GObjectsVA (%s)", Hex(va).c_str());
+    }
+    return va;
+}
+
+u64 SigFinder::FindGObjectsImpl(std::string* via) {
     const auto validate = &ValidateGObjects;
 
     // 1. profile-provided address

@@ -26,6 +26,10 @@ public:
     u64 FindGNames(std::string* via = nullptr);   // names first: object validation needs name count
     u64 FindGObjects(std::string* via = nullptr);
     u64 FindGWorld(std::string* via = nullptr);   // heuristic; requires names+objects ready
+    // resolution internals; the public wrappers additionally wire the resolved
+    // candidate VA into off_.GNamesVA / off_.GObjectsVA so TryInit() can parse
+    u64 FindGNamesImpl(std::string* via);
+    u64 FindGObjectsImpl(std::string* via);
 
     SigHit GObjectsHit;
     SigHit GNamesHit;

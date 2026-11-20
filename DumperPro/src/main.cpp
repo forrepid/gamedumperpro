@@ -222,7 +222,13 @@ static void FailWithHint(const std::string& msg, const std::string& hint) {
 // pipeline runs over this raw physical-address window. The base starts at the
 // reader's near-null guard (kMinValidVa = 0x10000), not at literal PA 0.
 static constexpr u64 kDeviceScanBase = 0x10000;
-static constexpr u64 kDeviceScanSize = 64ull * 1024 * 1024; // 64 MiB
+// Window upper bound. When the device reports a max physical address (paMax,
+// LC_OPT_CORE_ADDR_MAX) the window is clamped to that so file-backed dumps
+// (raw module dumps easily exceed 64 MiB on UE5 shipping builds) are scanned
+// in full; hardware devices are capped so a giant RAM dump cannot stall the
+// CLI for minutes. Without a reported max the legacy 64 MiB window applies.
+static constexpr u64 kDeviceScanFallback = 64ull * 1024 * 1024;  // legacy: 64 MiB
+static constexpr u64 kDeviceScanCap      = 512ull * 1024 * 1024; // hard cap: 512 MiB
 
 static std::string TimeStampDir() {
     std::time_t t = std::time(nullptr);
@@ -725,13 +731,18 @@ int main(int argc, char** argv) {
                 Log::Warn("LeechCore device '%s' reports no modules: the UE SDK needs "
                           "MemProcFS-level module info (vmm.dll VMMDLL_*) or a raw dump + "
                           "memmap (docs/LEECH.md).", reader->TargetName().c_str());
+                const u64 devMax = reader->MaxAddress();
+                u64 scanSize = kDeviceScanFallback;
+                if (devMax > kDeviceScanBase)
+                    scanSize = std::min<u64>(devMax - kDeviceScanBase, kDeviceScanCap);
                 Log::Warn("Falling back to a best-effort %s signature scan from %s "
-                          "(GObjects/GNames candidates only; heuristic struct scans stay "
-                          "disabled without a PE module image).",
-                          str::HumanSize(kDeviceScanSize).c_str(), Hex(kDeviceScanBase).c_str());
+                          "(device max=%s; GObjects/GNames candidates only; heuristic "
+                          "struct scans stay disabled without a PE module image).",
+                          str::HumanSize(scanSize).c_str(), Hex(kDeviceScanBase).c_str(),
+                          devMax ? Hex(devMax).c_str() : "unknown");
                 targetMod.name = reader->TargetName();
                 targetMod.base = kDeviceScanBase; // reader rejects near-null PAs
-                targetMod.size = kDeviceScanSize;
+                targetMod.size = scanSize;
                 leechRawScan = true;
             } else {
                 FailWithHint("no modules found in target", "target may be protected; try --kernel or file mode");
@@ -856,6 +867,21 @@ int main(int argc, char** argv) {
     }
 
     // ---- GObjects ----
+    // Partial-output path (1b lesson, real UE5.1 shipping binary): a COLD
+    // module image (static file / module dump) cannot contain runtime GObjects
+    // heap state - the array numbers are zero on disk. GNames, however, often
+    // IS present (populated pool data). So when GObjects fails AFTER names
+    // parsed, still write Names.txt + signature files instead of exiting with
+    // nothing.
+    auto writeNamesOnly = [&](const char* why) {
+        Log::Warn("%s", why);
+        DumpNames(ctx, outDir / "Names.txt");
+        if (opt.json) DumpNamesJson(ctx, outDir / "names.json");
+        WriteSignatureFiles(gameName, sigFinder, ver, outDir);
+        Log::Ok("Partial output written: %s (Names.txt)", outDir.string().c_str());
+        Log::Warn("Full SDK needs runtime GObjects: re-run against the live process "
+                  "(--process/--pid) or a full memory dump (--device \"file://ram.bin\")");
+    };
     ObjectArray objects;
     ctx.objects = &objects;
     SigFinder sigFinder2(*reader, mod, ctx.off, ver, &names, cfg);
@@ -864,6 +890,8 @@ int main(int argc, char** argv) {
         std::string via;
         u64 va = sigFinder2.FindGObjects(&via);
         if (!va) {
+            writeNamesOnly("GObjects: no valid candidate (sigs + struct scan failed; "
+                           "cold module image has no runtime array state)");
             FailWithHint("GObjects not found",
                 "add to games.ini:  [" + gameName + "]\n  gobjects = 0x<address>\nor a gobjects_pattern = 48 8B 05 ... line");
             return 5;
@@ -871,6 +899,7 @@ int main(int argc, char** argv) {
         Log::Ok("GObjects @ 0x%llX (via %s)", (unsigned long long)va, via.c_str());
         std::string perr;
         if (!objects.TryInit(*reader, ctx.off, ver, &names, &perr)) {
+            writeNamesOnly("GObjects parse failed - writing partial GNames output");
             FailWithHint("GObjects parse failed: " + perr,
                 "try adding array.item_stride=0x18 / array.chunk_size=0x10000 (UE4: 0x2800) to games.ini");
             return 5;
