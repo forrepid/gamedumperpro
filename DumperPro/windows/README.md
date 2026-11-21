@@ -1,8 +1,9 @@
 # DumperPro — Windows Test Kiti (LeechCore `--device`)
 
-Bu klasör, DumperPro motorunun **v0.3.0** durumuna karşılık gelen Windows tarafı
-test kitidir: MSVC derleme scripti, resmi MemProcFS sürümünden `leechcore.dll`
-temini ve `--device` (LeechCore) modunun 4 adımlı otomatik test baterisi.
+Bu klasör, DumperPro motorunun **v0.4.2** durumuna karşılık gelen Windows tarafı
+test kitidir: MSVC derleme scripti (VS 2026/2022 + otomatik VS tespiti), resmi
+MemProcFS sürümünden `leechcore.dll` temini ve `--device` (LeechCore) modunun
+4 adımlı otomatik test baterisi.
 
 > Motor tarafının ne yaptığı ve neden böyle yaptığı için: **`docs/LEECH.md`**
 > (mimari, API tablosu, cihaz stringleri, sınırlar). Bu README yalnızca
@@ -15,7 +16,7 @@ temini ve `--device` (LeechCore) modunun 4 adımlı otomatik test baterisi.
 | Bileşen | Gerekli mi | Not |
 |---|---|---|
 | Windows 10/11 **x64** | Evet | Motor yalnızca x64 olarak derlenir/test edilir |
-| **VS 2022** ya da *Build Tools for VS 2022* + "Desktop development with C++" workload | Evet (derleme için) | "x64 Native Tools Command Prompt for VS 2022" ile çalıştırın |
+| **VS 2026 (v18)** ya da VS 2022 / *Build Tools* + "Desktop development with C++" workload | Evet (derleme için) | "x64 Native Tools Command Prompt for VS 2026" ile çalıştırın — normal cmd'de de çalışır: script VS'yi **vswhere** ile kendisi bulur |
 | `leechcore.dll` | TEST 1 için evet | `get-leechcore.ps1` ile temin edilir (GPL-3.0, ufrisk; DumperPro dağıtmaz) |
 | DMA donanımı (FPGA kart / USB3380) | **Hayır** | Yalnızca TEST 2/3'ün "donanımlı" kolu içindir. `file://` testi (TEST 1) **donanım gerektirmez** |
 | VC++ Redistributable | Genelde hayır | Derleme makinesinde VS zaten var; MemProcFS zip'i `vcruntime140.dll` taşır. Sorun çıkarsa `vc_redist.x64.exe` kurun |
@@ -66,7 +67,14 @@ dir leechcore.dll
 
 ## 3. Derleme (`build.bat`)
 
-"**x64 Native Tools Command Prompt for VS 2022**" penceresi aç → bu klasöre gel → çalıştır:
+İki yol vardır:
+
+- **Baslat menüsü → "x64 Native Tools Command Prompt for VS 2026"** (veya VS 2022)
+  penceresi aç → bu klasöre gel → çalıştır. *veya*
+- **Normal cmd / çift tık**: script `vswhere.exe` + bilinen kurulum yolları
+  (`C:\Program Files\Microsoft Visual Studio\18\...` VS 2026, `\2022\...`,
+  `\2019\...`) üzerinden VS'yi bulup `vcvarsall.bat x64` ile MSVC ortamını
+  kendisi kurar.
 
 ```bat
 cd DumperPro\windows
@@ -74,8 +82,8 @@ build.bat
 ```
 
 Script `cl.exe` bulunamazsa açık bir hata mesajıyla çıkar; `..\src` altındaki
-tüm `.cpp` dosyalarını `/std:c++20 /EHsc /O2 /utf-8` ile derleyip bu klasöre
-`DumperPro.exe` üretir. Ara dosyalar `obj\` klasörüne toplanır.
+tüm `.cpp` dosyalarını `/std:c++20 /EHsc /O2 /MP /utf-8` ile derleyip bu
+klasöre `DumperPro.exe` üretir. Ara dosyalar `obj\` klasörüne toplanır.
 
 Kod gerçekleri ( neden ekstra define gerekmez):
 
@@ -211,7 +219,7 @@ ile sınırlanır (üst kap 512 MiB).
 | Belirti | Olası neden | Çözüm |
 |---|---|---|
 | `leechcore.dll not found (err 126/2)` + `Hint:` satırı | DLL exe yanında ve PATH'te yok | `get-leechcore.ps1` çalıştır; DLL'i `DumperPro.exe` yanına koy; ya da DLL klasörünü PATH'e ekle |
-| Derlemede `cl.exe bulunamadi` | "x64 Native Tools" penceresi değil | VS Installer → Build Tools + C++ workload; sonra doğru pencereyi aç |
+| Derlemede `cl.exe bulunamadi` | "x64 Native Tools" penceresi değil VE VS bulunamadı | VS Installer → VS 2026 Community + "C++ ile masaüstü geliştirme" workload; sonra doğru pencereyi aç ya da normal cmd'de tekrar dene (vswhere otomatik bulur) |
 | `cannot open LeechCore device: fpga/usb3380:` | Donanım yok veya sürücü yok | Donanımsızsa normal (TEST 2/3 PASS). Kart varsa: yönetici penceresi, FTDI D2XX sürücüsü (FPGA), kartın PCIe/USB bağını kontrol et |
 | USB3380 için sürücü hatası | Sürücü imzası / kod imzalama | Windows'ta test imzalı sürücü gerekiyorsa `bcdedit /set testsigning on` + yeniden başlatma (kendi sorumluluğunda; sonra kapat) |
 | DLL yüklendi ama boya/eksik DLL hatası (`err 126`, vcruntime) | VC++ runtime eksik | `vc_redist.x64.exe` kur (https://aka.ms/vs/17/release/vc_redist.x64.exe) |
@@ -243,7 +251,7 @@ ile sınırlanır (üst kap 512 MiB).
 
 | Dosya | İş |
 |---|---|
-| `build.bat` | MSVC (x64, C++20, /O2) derleme scripti → `DumperPro.exe` |
+| `build.bat` | MSVC (x64, C++20, /O2, /MP) derleme scripti → `DumperPro.exe`; VS 2026/2022/2019 otomatik tespit (vswhere + bilinen yollar) |
 | `get-leechcore.ps1` | Resmi MemProcFS sürümünden `leechcore.dll` indirme/yerleştirme |
 | `test-device.bat` | 4 adımlı otomatik test baterisi ([TEST 1/4]..[TEST 4/4], PASS/FAIL özeti) |
 | `README.md` | Bu dosya |

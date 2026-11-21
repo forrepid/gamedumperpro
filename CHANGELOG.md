@@ -2,6 +2,23 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) — semantik sürümleme (MAJOR.MINOR.PATCH).
 
+## [0.4.2] — 2026-11-20
+
+### Eklendi — Windows derleme: VS 2026 desteği (2. tur, gerçek-makine)
+- **build.bat VS 2026 (v18) tanıma**: "x64 Native Tools Command Prompt for VS
+  2026" penceresi birebir desteklenir; normal cmd/çift-tık'tan çalıştırmada
+  script VS'yi otomatik bulur — **vswhere.exe** (VC.Tools.x86.x64 workload
+  filtresiyle) + bilinen kurulum yolları (`...\Microsoft Visual Studio\18\
+  {Community,Professional,Enterprise,BuildTools}` VS 2026, `\2022\...`,
+  `\2019\...` yedek) → bulunan kurulumda `vcvarsall.bat x64` çağrılır
+- **/MP paralel derleme**: tüm .cpp'ler tek cl çağrısında çok çekirdekte
+  derlenir (~50 TU'da belirgin hızlanma); /utf-8, /std:c++20, /O2, /W3,
+  /D_CRT_SECURE_NO_WARNINGS korunur
+- windows/README.md VS 2026 ön koşul + derleme + sorun giderme bölümleriyle
+  güncellendi (kit artık v0.4.2 durumuna karşılık gelir)
+- *Not:* MSVC kaynak düzeltmeleri (kPage/bswap/io.h/C4244) ilk turda yapıldı —
+  bkz. [0.4.1]; bu sürüm Windows test kitinin VS 2026'ya göre yenilenmesidir
+
 ## [0.4.1] — 2026-11-20
 
 ### Eklendi — Web platformu: kod üretimi + semantik zenginleştirme
