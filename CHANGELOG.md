@@ -2,6 +2,45 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) — semantik sürümleme (MAJOR.MINOR.PATCH).
 
+## [0.5.2] — 2026-11-21
+
+### Eklendi — Pattern Visual Scanner: desen tanımlama + görselleştirme + imza çıkarıcı
+
+**Neden:** web tarafındaki imza taraması yalnızca sabit 6 desenle gidiyor, kullanıcı kendi
+desenini yazamıyor, eşleşmeler ham RVA/VA tablosu olarak gösteriliyordu; C++ motorunun
+nibble-mask desteği (PatByte 0xF0/0x0F) ve `BuildExtendedSig` imza çıkarıcının web karşılığı yoktu.
+
+**Web pattern motoru (`src/lib/analysis/pattern.ts` — C++ `core/Pattern.{h,cpp}` portu):**
+- IDA tarzı ayrıştırma: `48 8B 05 ??` + **nibble kısmi maske** (`4?` hi-nibble, `?8` lo-nibble;
+  ayrıçalar `, . _ \x` normalize edilir), token üst sınırı 512, "tamamen joker" reddi
+- `findPatternMatches`: ilk literal token `Buffer.indexOf` sabitli tarama (AOB hattıyla aynı hız
+  sınıfı, 128 MB tarama penceresi); eşleşme başına off/rva/va/bölüm etiketleri
+- `patternStats`: literal/nibble/joker sayımı + **özgüllük** metrikleri — rastgele veride beklenen
+  eşleşme aralığı `(1/256)^literal · (1/16)^nibble` → zayıf/orta/iyi/güçlü etiketi
+- `extractSignature` (BuildExtendedSig portu): eşleşme çevresinden before/after bağlam ile imza
+  üretimi; **maskMode**: "pattern" — desenin joker konumları çıktıda `??` korunur (rel32/imm32
+  yeniden konumlanmada hayatta kalır) / "keep" — ham baytlar; hi/lo nibble bayt değeriyle
+  somutlaştırılır
+- 4 çıktı formatı: **IDA/CE** (`48 8B 05 ?? ...`), **x64dbg** (bayt + mask satırı, nibble bayt
+  jokerine düşürülüp not edilir), **C++** (`bytes[] + mask[]` 0xFF/0xF0/0x0F/0x00), **Python**
+  (literal `b"..."` veya bytes+mask çifti)
+
+**API (`POST /api/uploads/[id]/pattern`):**
+- `action:"scan"` — custom desen tarama (bölüm filtresi + eşleşme üst sınırı; eşleşme başına
+  önce/sonra 8 bayt **görsel bağlam** döner)
+- `action:"extract"` — ofsetten imza çıkarma (before/after/maskMode parametreleri, RVA/VA/bölüm +
+  özgüllük istatistikleriyle)
+
+**UI (Analyzer → "Imza / Pattern" sekmesi — `src/components/pattern-visual.tsx`):**
+- Desen girişinde **canlı token önizleme** — renk kodu: emerald=literal, amber=nibble, zinc=joker
+  (+ hatalı token anında Türkçe uyarı); bayt/literal/nibble/joker/özgüllük rozetleri
+- 8 hazır desen çipi (sabit adaylar + 2 nibble örneği: `4? 8B 05` REX-gevşek, `4? 89 ?? ?? 5?` x64 prolog)
+- Tarama sonuçlarında her eşleşme için **görsel bayt şeridi**: bağlam baytları soluk, eşleşme
+  bölgesi token tipine göre renkli; "Hex'e git" mevcut hex penceresine atlama (jump) tetikler
+- **İmza Çıkarıcı** diyaloğu: önce/sonra bağlam ayarı (anlık yeniden çıkarma) + "jokerleri koru"
+  anahtarı + çıkarılan imzanın renkli şeridi + 4 format sekmeli çıktı ve kopyalama
+- `bun run lint` temiz
+
 ## [0.5.1] — 2026-11-21
 
 ### Eklendi — Merkezi veri tipi kayıt sistemi: motor + web (Cheat Engine / ReClass düzeyi)

@@ -59,6 +59,7 @@ import { DATA_TYPE_GROUPS, resolveDataType, type DataType } from "@/lib/analysis
 import type { ExtractorId, ExtractorsInfo, GameFilesInfo, Il2CppBinaryInfo, MemInfo } from "@/lib/analysis/types";
 import CodegenTab from "@/components/codegen-tab";
 import SaveEditorTab from "@/components/save-editor-tab";
+import PatternVisualScanner from "@/components/pattern-visual";
 
 // ------------------------- tipler (API ile ayni sekil) -------------------------
 
@@ -1385,7 +1386,7 @@ function ResultPanel({
             </TabsTrigger>
             {isPe && (
               <TabsTrigger value="imza" className={TRIGGER_CLS}>
-                Imza Adaylari
+                Imza / Pattern
               </TabsTrigger>
             )}
             {isPe && (r.pe?.debug || r.pe?.dataDirectories) && (
@@ -1907,9 +1908,17 @@ function ResultPanel({
             )}
           </TabsContent>
 
-          {/* ---------- IMZA ADAYLARI ---------- */}
+          {/* ---------- IMZA / PATTERN VISUAL ---------- */}
           {isPe && (
             <TabsContent value="imza" className="mt-4 space-y-3">
+              <PatternVisualScanner
+                uploadId={detail.upload.id}
+                pe={r.pe}
+                onJumpHex={(off) => {
+                  setTabValue("hex");
+                  setHexJump({ off, nonce: Date.now() });
+                }}
+              />
               <p className="text-[11px] leading-relaxed text-zinc-500">
                 Statik adaylar: eslesen bayt desenleri RVA/VA&apos;ya cevrilir ancak calistirma olmadan
                 dogrulanamaz. DumperPro canli modu (--process / --pid) RIP-relative cozumleme ve
@@ -2757,14 +2766,11 @@ function HexTab({ uploadId, onRefreshHistory, jump }: { uploadId: string; onRefr
     [uploadId, toast],
   );
 
+  // gorunum: ilk mount'ta jump varsa ona git (0'la yarismasin), yoksa 0'dan basla;
+  // sonraki jump nonce degisikliklerinde yeniden yukle
   useEffect(() => {
-    void fetchView(0);
-  }, [fetchView]);
-
-  // struct vftable butonundan gelen atlama (nonce her tikte degisir)
-  useEffect(() => {
-    if (jump) void fetchView(jump.off);
-  }, [jump]);
+    void fetchView(jump?.off ?? 0);
+  }, [jump, fetchView]);
 
   // dosyanin ham baytlari (eski deger gosterimi icin)
   const fileBytes = useMemo(() => {
