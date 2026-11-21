@@ -19,6 +19,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) — semantik s�
 - *Not:* MSVC kaynak düzeltmeleri (kPage/bswap/io.h/C4244) ilk turda yapıldı —
   bkz. [0.4.1]; bu sürüm Windows test kitinin VS 2026'ya göre yenilenmesidir
 
+### Düzeltildi — build.bat v0.4.2.1: "Baslat was unexpected at this time"
+- İlk 0.4.2 scriptinde `if errorlevel 1 ( ... )` bloğu **içindeki** echo
+  metinlerinde kaçışsız parantez vardı (`echo 1) Baslat ...`); cmd.exe blok
+  tarayıcısı `)` ile bloğu erken kapatıp `Baslat` token'ında parse hatası
+  veriyordu — script daha derleme aşamasına gelmeden ölüyordu
+- **Yapısal çözüm**: büyük if-blok'ları `goto` akışına çevrildi, blok içi echo
+  metinlerinden parantezler tamamen kaldırıldı; dosya CRLF satır sonlarına
+  çevrildi; açılışta `build.bat v0.4.2.1` sürüm satırı basılır (doğru kopyanın
+  doğrulaması için)
+- **Daha sağlam VS tespiti**: vswhere bulunamazsa/boş dönerse bilinen yollar
+  hem `\18\` (VS 2026) hem `\2026\` hem `\2022\` hem `\2019 (x86)\`
+  dallarında denenir; cl.exe yine bulunamazsa vswhere tanı günlüğü + beklenen
+  kurulum yolları ekrana yazılır (uzaktan hata ayıklama için)
+
 ## [0.4.1] — 2026-11-20
 
 ### Eklendi — Web platformu: kod üretimi + semantik zenginleştirme
