@@ -4,6 +4,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) — semantik s�
 
 ## [0.4.2] — 2026-11-20
 
+### Doğrulandı — Windows kit gerçek makinede uçtan uca (VS 2026 + 4 PASS / 0 FAIL)
+- **Ortam**: Windows + VS 2026 Community (MSVC Toolset 14.52.37025), klasör
+  adında **parantez** olan yerleşim (`...UnrealDumperX_src (4)\...`)
+- `build.bat` → **DumperPro.exe** derlendi; `get-leechcore.ps1` →
+  leechcore.dll v5.19 yerleşti; `test-device.bat` → **4 PASS / 0 FAIL**
+- TEST 1'i PASS yapan hat: LcCreate (`file://` 16 MB sentetik dump) → LcRead
+  tam tarama → `DMPPRO-TEST-SIG!` + `++UE5+Release-5.1.1` marker tespiti —
+  yani Windows'ta cihaz hattı + imza motoru birebir çalışıyor
+- TEST 4'te `--file` çıkış kodu 0 (PE temiz parse; script 0/4/5'i kabul eder)
+- 4 tur gerçek-makine hata döngüsü kapanmış oldu: ① kaynak MSVC uyumluluğu
+  (0.4.1), ② build.bat cmd parse, ③ BinFold `<array>`, ④ test-device.bat
+  parantezli yol + blok-içi `%ERRORLEVEL%`
+
 ### Eklendi — Windows derleme: VS 2026 desteği (2. tur, gerçek-makine)
 - **build.bat VS 2026 (v18) tanıma**: "x64 Native Tools Command Prompt for VS
   2026" penceresi birebir desteklenir; normal cmd/çift-tık'tan çalıştırmada
