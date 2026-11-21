@@ -5,6 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getProjectFiles } from "@/lib/project-files";
 import Explorer from "@/components/explorer";
 import Analyzer from "@/components/analyzer";
+import DumperProTab from "@/components/dumperpro-tab";
 
 export const dynamic = "force-dynamic";
 
@@ -122,12 +123,21 @@ export default function Home() {
               >
                 Kaynak Kod
               </TabsTrigger>
+              <TabsTrigger
+                value="dumperpro"
+                className="text-zinc-400 data-[state=active]:bg-emerald-600/20 data-[state=active]:text-emerald-300"
+              >
+                DumperPro
+              </TabsTrigger>
             </TabsList>
             <TabsContent value="analiz">
               <Analyzer />
             </TabsContent>
             <TabsContent value="kaynak">
               <Explorer files={files} />
+            </TabsContent>
+            <TabsContent value="dumperpro">
+              <DumperProTab />
             </TabsContent>
           </Tabs>
         </div>

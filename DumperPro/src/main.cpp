@@ -26,6 +26,7 @@
 #include "dump/Dumps.h"
 #include "dump/SDKGenerator.h"
 #include "dump/VTableResolver.h"
+#include "dump/ResultExport.h"
 #include "sig/SigFinder.h"
 #include "config/Config.h"
 #include "file/StaticAnalyzer.h"
@@ -128,7 +129,9 @@ static void PrintUsage() {
         "  --bindiff-json <f>    with --bindiff: also write a machine-readable JSON report\n"
         "  --modules             list engine modules (registry) and exit\n"
         "  --json                machine-readable JSON outputs (names.json, objects.json,\n"
-        "                        analysis_report.json) alongside the text dumps\n"
+        "                        analysis_report.json) alongside the text dumps. functions.json\n"
+        "                        + result.json (web platform import bundle) are written\n"
+        "                        regardless of this flag\n"
         "  --probe <n>           offset probe sample count (default 400)\n"
         "  --no-sdk              dump names/objects/offsets only, skip SDK generation\n"
         "  --verbose             detailed logging\n"
@@ -271,6 +274,20 @@ static std::string TimeStampDir() {
              tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
              tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
     return buf;
+}
+
+// result.json manifest icinde calisma modunu/hedefi turet (0.5.0 web koprusu)
+static void FillRunMode(const Options& opt, ResultManifest& rm) {
+    if (!opt.device.empty()) {
+        rm.mode = "device";
+        rm.target = opt.device;
+    } else if (!opt.process.empty() || opt.pid) {
+        rm.mode = opt.kernel ? "kernel" : "process";
+        rm.target = opt.process.empty() ? ("pid:" + std::to_string(opt.pid)) : opt.process;
+    } else {
+        rm.mode = "file";
+        rm.target = opt.file.string();
+    }
 }
 
 // dosyanin ilk 4 baytindan PE olup olmadigini anlamak icin hafif koklama
@@ -955,6 +972,25 @@ int main(int argc, char** argv) {
         DumpNames(ctx, outDir / "Names.txt");
         if (opt.json) DumpNamesJson(ctx, outDir / "names.json");
         WriteSignatureFiles(gameName, sigFinder, ver, outDir);
+
+        // result.json: names-only manifest (web platformu da bunu icebilir)
+        {
+            ResultManifest rm;
+            FillRunMode(opt, rm);
+            rm.game = gameName;
+            rm.ueVer = ver.Str();
+            rm.moduleName = mod.Name;
+            rm.moduleBase = mod.Base;
+            rm.moduleSize = mod.SizeOfImage();
+            rm.status = "names-only";
+            rm.namesCount = (size_t)(ctx.names ? ctx.names->Num() : 0);
+            rm.artifacts.push_back("Names.txt");
+            if (opt.json) rm.artifacts.push_back("names.json");
+            rm.artifacts.push_back("signatures.txt");
+            if (WriteResultManifest(outDir / "result.json", rm))
+                Log::Ok("result.json written (names-only manifest)");
+        }
+
         Log::Ok("Partial output written: %s (Names.txt)", outDir.string().c_str());
         Log::Warn("Full SDK needs runtime GObjects: re-run against the live process "
                   "(--process/--pid) or a full memory dump (--device \"file://ram.bin\")");
@@ -1059,6 +1095,40 @@ int main(int argc, char** argv) {
 
     // ---- signature files ----
     WriteSignatureFiles(gameName, sigFinder2, ver, outDir);
+
+    // ---- functions.json + result.json (0.5.0: web platformu koprusu) ----
+    // functions.json her zaman yazilir (--json'dan bagimsiz): GObjects uzerinden
+    // tum UClass fonksiyonlari; web tarafindaki ice aktarma bu iki dosyayi bekler.
+    {
+        std::vector<FuncJsonRec> funcs;
+        size_t funcCount = 0;
+        if (CollectFunctionsJson(ctx, funcs)) {
+            if (WriteFunctionsJson(outDir / "functions.json", funcs,
+                                   gameName, ver.Str(), mod.Name, mod.Base)) {
+                funcCount = funcs.size();
+            }
+        }
+
+        ResultManifest rm;
+        FillRunMode(opt, rm);
+        rm.game = gameName;
+        rm.ueVer = ver.Str();
+        rm.moduleName = mod.Name;
+        rm.moduleBase = mod.Base;
+        rm.moduleSize = mod.SizeOfImage();
+        rm.status = "full";
+        rm.namesCount = (size_t)(ctx.names ? ctx.names->Num() : 0);
+        rm.objectsCount = (size_t)(ctx.objects ? ctx.objects->Num() : 0);
+        rm.functionsCount = funcCount;
+        rm.artifacts = {"Names.txt", "Objects.txt", "offsets.txt", "signatures.txt"};
+        if (opt.json) rm.artifacts.push_back("names.json");
+        if (opt.json) rm.artifacts.push_back("objects.json");
+        if (funcCount) rm.artifacts.push_back("functions.json");
+        if (!opt.noSdk) rm.artifacts.push_back("SDK/");
+        rm.artifacts.push_back("vtable_funcs.txt");
+        if (WriteResultManifest(outDir / "result.json", rm))
+            Log::Ok("result.json written (web platform import manifest)");
+    }
 
     double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     char doneBuf[512];

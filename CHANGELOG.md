@@ -2,6 +2,45 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) — semantik sürümleme (MAJOR.MINOR.PATCH).
 
+## [0.5.0] — 2026-11-21
+
+### Eklendi — Motor→Web köprüsü: `functions.json` + `result.json` + "DumperPro İçe Aktar" sekmesi
+
+**Motor (C++, v0.5.0):**
+- **Yeni modül `src/dump/ResultExport.{h,cpp}`**:
+  - `functions.json` — GObjects üzerinden **tüm UClass UFunction listesi**: `cls`,
+    `pkg` (en üst Outer), `name`, `rva` (modül içindeyken), `va`/`ufunction`/`native`,
+    `paramsSize`, `flags`, tam **params** dizisi (name/type/offset/size/flags/target)
+    + opsiyonel `ret`; adres/offset alanları hex-string sözleşmesiyle
+    (`"0x..."` — web parser `parseInt(x,16)` ile okur); `--json` bayrağından
+    **bağımsız** her tam çalışmada yazılır
+  - `result.json` — sürümlü manifest: `format`/`version`/`tool`/`generated`/
+    `target{mode,detail}`/`game`/`ue`/`module{name,base,size}`/`status(full|names-only)`/
+    `counts`/`artifacts[]`; GObjects bulunamazsa **names-only** kısmi yolunda da yazılır
+- main.cpp hook'ları (`FillRunMode`) + `--help` metni güncellendi; build.bat
+  `..\src\dump\*.cpp` wildcard'ı yeni modülü otomatik kapsar
+- Doğrulama: g++ tam regresyon EXIT 0; yazar birim testi (şema + JSON escape +
+  hex genişlik + `native:0x0` BP-only durumu) `python json` ile PASS
+
+**Web (Next.js):**
+- **Prisma `DumperProImport` modeli** (normalize edilmiş names/objects/functions
+  JSON'u + meta + sayımlar) — eklemeli `db:push`
+- **API**: `POST /api/dumperpro/import` (çoklu dosya + .zip demeti; JSON'lar +
+  Names.txt/Objects.txt/funcs.txt tolerant metin parser'ları), `GET imports`
+  (liste), `GET imports/[id]` (meta|names|functions|objects — **sunucu taraflı
+  arama/sayfalama**, ayrık sınıf listesi), `DELETE` (kayıt + storage dizini),
+  `GET imports/[id]/codegen` (cpp/csharp/python/rust/typescript/java/lua/json)
+- **`src/lib/dumperpro/`**: `parse.ts` (motor JSON şemaları + metin yedekleri +
+  zip çıkarımı yeniden kullanımı), `codegen.ts` (fonksiyon başına
+  `// RVA 0x.. VA 0x.. UFunction 0x..` yorumlu üretim)
+- **3. üst sekme "DumperPro"**: sürükle-bırak içe aktarma, kayıt listesi
+  (Aç/Codegen/Sil), gezgin: meta kartları + alt sekmeler (Fonksiyonlar tablosu +
+  detay diyaloğu + **semantik kategori etiketleri**, GNames arama/tarama,
+  Nesneler, Kod Üret) — kart p-6/gap-6, ScrollArea, mobil uyumlu
+- **agent-browser E2E PASS**: içe aktarma → gezgin → arama → detay diyaloğu →
+  codegen çıktısı → silme; konsol hatasız; sticky footer (kısa içerikte gap 0)
+  ve mobilde yatay taşma yok; `bun run lint` temiz
+
 ## [0.4.2] — 2026-11-20
 
 ### Doğrulandı — Windows kit gerçek makinede uçtan uca (VS 2026 + 4 PASS / 0 FAIL)

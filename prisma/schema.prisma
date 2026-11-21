@@ -41,3 +41,30 @@ model Analysis {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
+
+// ----------------------------------------------------------------------------
+// DumperPro ice aktarma: Windows C++ aracindan (DumperPro.exe) gelen JSON /
+// TXT sonuc dosyalari (names.json, objects.json, functions.json, result.json,
+// Names.txt, Objects.txt, funcs.txt) normalize edilerek burada saklanir.
+// ----------------------------------------------------------------------------
+model DumperProImport {
+  id             String   @id @default(cuid())
+  label          String
+  toolVersion    String?
+  mode           String?
+  target         String?
+  game           String?
+  ueVersion      String?
+  moduleName     String?
+  moduleBase     String?
+  status         String   @default("full")
+  namesJson      String?
+  objectsJson    String?
+  functionsJson  String?
+  namesCount     Int      @default(0)
+  objectsCount   Int      @default(0)
+  functionsCount Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  @@index([createdAt])
+}
