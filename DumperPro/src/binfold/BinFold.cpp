@@ -18,6 +18,8 @@
 #include "binfold/BinFold.h"
 
 #include <cstring>
+#include <array>     // Guid = std::array<u8,16> (MSVC C2027: tam tanim icin sart)
+#include <utility>   // std::pair / std::move
 
 namespace dumper {
 namespace binfold {

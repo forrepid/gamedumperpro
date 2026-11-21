@@ -33,6 +33,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) — semantik s�
   dallarında denenir; cl.exe yine bulunamazsa vswhere tanı günlüğü + beklenen
   kurulum yolları ekrana yazılır (uzaktan hata ayıklama için)
 
+### Düzeltildi — BinFold.cpp C2027 (VS 2026 gerçek-makine 3. tur)
+- **`std::array<u8,16>` tanımsız tür**: BinFold.cpp `Guid` için `std::array`
+  kullanıyordu ama `<array>` include edilmemişti — MSVC STL'de `<utility>`
+  `std::array`'i yalnız **ileri-deklare** eder (g++'ta transitive include
+  geldiği için Linux'ta görünmüyordu; tüm hatalar C2027/C2079/C2109/C2676
+  kaskadesi tek kökten çıktı)
+- **framework.h'e `<array>` + `<utility>` eklendi** (tüm modüllerde aynı sınıf
+  tuzakları önlendi) + BinFold.cpp'ye doğrudan `<array>`/`<utility>` include'ları
+- g++ regresyon derlemesi + framework.h probe (std::array completeness) +
+  `--bindiff` / `--modules` smoke testleri temiz
+
 ## [0.4.1] — 2026-11-20
 
 ### Eklendi — Web platformu: kod üretimi + semantik zenginleştirme

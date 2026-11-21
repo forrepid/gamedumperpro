@@ -14,6 +14,8 @@
 #include <cstdarg>
 #include <string>
 #include <vector>
+#include <array>          // MSVC: std::array yalniz <utility> icinde ileri-deklare; tam tanim icin
+#include <utility>        // std::pair/std::move acik include (MSVC tasinabilirlik)
 #include <map>
 #include <set>
 #include <unordered_map>
