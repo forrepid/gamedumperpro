@@ -2,6 +2,67 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) — semantik sürümleme (MAJOR.MINOR.PATCH).
 
+## [0.5.1] — 2026-11-21
+
+### Eklendi — Merkezi veri tipi kayıt sistemi: motor + web (Cheat Engine / ReClass düzeyi)
+
+**Denetim sonucu (neden):** tip "isimleri" vardı (UE→C++ eşleme, IL2CPP
+PrimTypeName, save editor GVAS tipleri, codegen tabloları) ama **bayt→değer
+yorumlama yoktu**: hex viewer ve tarama yalnızca AOB (byte deseni) destekliyor,
+float/double/bit/vec hiçbir yerde okunamıyordu. Merkezi `DataType` kayıt
+sistemi eklenerek bütün modüller tek tip setine bağlandı.
+
+**Motor (C++, `src/core/DataType.{h,cpp}` — yeni modül `types`):**
+- 18 tip, little-endian: `i8 i16 i32 i64 u8 u16 u32 u64` (+`byte/word/dword/
+  qword/short/int/...` alias'ları), `f32/float f64/double`, `bool`, `bit`
+  (bayt içi 0..7, LSB), `str` (ASCII, NUL'a kadar), `str16` (UTF-16LE),
+  `ptr` (8 B hex), `vec2/vec3/vec4` (float vektör; `fvector`/`frotator`
+  alias'lı)
+- `Decode()` (bayt→değer + usedBytes + not), `Encode()` (değer→bayt, aralık
+  kontrollü; "42"/"0x2A"/"3.14"/"true"/"1 2 3"), `TryTypedQuery()`
+  (`f32:3.14`, `i32:1337`, `bool:1`, `str:Hello`, `vec3:1 2 3` sorgu ön ekleri),
+  `TypeTable()`; `text:/text16:` ön ekleriyle çakışma korunması
+- **HexTool**: `RenderTyped()` — `--hex-type 0x1000:16:float` tipli görünüm
+  (VA + ham bayt + [tip] değer satırları; string'lerde NUL tüketicisi adım);
+  `--hex-search` artık tipli değer ön eklerini de kabul ediyor (AOB yolu
+  korunmuş durumda)
+- **MemoryReader**: `ReadI8/I16/I64/F32/F64` + `ReadF32Or/ReadF64Or` tipli
+  okuma yardımcıları
+- **SDKGenerator `_basics.hpp`**: `FVector/FVector2D/FVector4/FRotator`
+  byte-exact float stub'ları eklendi (StructProperty üyeleri artık derlenir)
+- **ModuleRegistry**: `types 0.4.3` modülü kayıtlı; `--help` + `--modules`
+  güncel
+- **Birim testleri**: g++ host derlemesiyle 28/28 PASS (alias'lar, decode
+  yuvarlama, str/str16 NUL tüketimi, bit, encode aralık reddi, typed-query
+  önekleri, `text:` çakışma koruması); g++ `-fsyntax-only` HexTool/main/SDK
+  EXIT 0
+
+**Web (Next.js):**
+- **`src/lib/analysis/hex.ts`**: `DataType` birliği + `DATA_TYPE_META` +
+  `DATA_TYPE_GROUPS` (gruplu UI listesi) + alias çözümleyici `resolveDataType`
+  (C++ tablosuyla birebir), `decodeValue()` (BigInt'i aşan i64/u64 dahil,
+  str16 surrogate çiftleri), `encodeValue()` (aralık hataları Türkçe),
+  `valueSearch()` (değer→desen→aobSearch, `encoded` desen döner)
+- **API**: `POST .../hex` yeni `action:"decode"` (off+type+count+bitIndex →
+  değer tablosu) ve `action:"search"` artık `type+value` kabul ediyor;
+  `POST .../mem` search aynı şekilde tipli değer arıyor (modül/RVA etiketli)
+- **HexTab**: **"Tip yorumla"** paneli (gruplu tip seçici + ofset + adet +
+  bit 0-7 → Offset|Baytlar|Değer tablosu; satıra tıkla → hex pencere oraya
+  gider) + **"Deger arama"** paneli (tip seçici + değer → eşleşme tablosu +
+  `desen: xx xx` rozeti) — mevcut byte-düzenleme ve AOB arama aynen kaldı
+- **MemTab**: tipli değer arama satırı (AOB satırıyla yan yana)
+- **Dizeler sekmesi**: ASCII/UTF-16 rozetleri (`A`/`W`) — `kind` alanı artık
+  görünür
+- **structs.ts**: SSE kanıtlı tip netleştirme — `movss/addss→float`,
+  `movsd/comisd→double` (eskiden movsd 16 B paketlenmiş sanılırdı); alan
+  tipleri artık `float`/`double` olabiliyor
+- **savegame.ts**: işaretsiz yazım düzeltmesi — `uint32/uint64/uint16` kendi
+  `u32/u64/u16` yazıcılarından geçer (eski `i32/i64` daraltması büyük
+  değerleri bozuyordu)
+- **agent-browser E2E**: test dosyası (1337/i32 + 3.14/f32 + "Hello World!"/str
+  + bit3 + vec3 1.5 2.5 3.5 + "Selam"/str16 + 0x7FF6A1B2C3D4/ptr) ile API ve
+  UI uçtan uca PASS; mobilde yatay taşma yok; `bun run lint` temiz
+
 ## [0.5.0] — 2026-11-21
 
 ### Eklendi — Motor→Web köprüsü: `functions.json` + `result.json` + "DumperPro İçe Aktar" sekmesi

@@ -66,7 +66,8 @@ public:
 | `il2cpp` | 0.3.0 | Unity IL2CPP metadata v16-31 parse, binary match, DummyDll çıktısı |
 | `file` | 0.3.0 | APK/ZIP/ELF/DEX/Mach-O/OAT-VDEX statik analiz hattı |
 | `dump` | 0.3.0 | SDK header/struct üretimi (SDKGenerator + Dumps) |
-| `hex` | 0.3.0 | hex/code/binary görünüm, AOB arama, patch/undo/save (`--hex`) |
+| `hex` | 0.3.0 | hex/code/binary/typed görünüm, AOB+tipli arama, patch/undo/save (`--hex`) |
+| `types` | 0.5.1 | merkezi veri tipi kayıt sistemi: decode/encode i8..u64/f32/f64/bool/bit/str/str16/ptr/vec2-4 (LE) |
 | `net` | 0.3.0 | `--serve` HTTP upload + analiz sunucusu |
 | `config` | 0.3.0 | games.ini profilleri + gömülü offset profilleri |
 | `binfold` | 0.1.0 | binary diff/benzerlik: WARP fonksiyon GUID'leri + constraint eşleme |

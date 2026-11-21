@@ -748,6 +748,54 @@ std::string HexTool::RenderBinary(u64 offset, size_t bytes) const {
     return o.str();
 }
 
+std::string HexTool::RenderTyped(u64 offset, DType type, size_t count,
+                                 int bitIndex) const {
+    std::ostringstream o;
+    if (!ok_) { o << "(kaynak hazir degil)\n"; return o.str(); }
+    if (count == 0) count = 1;
+    if (count > 256) count = 256;
+    const size_t sz = DataType::SizeOf(type);
+    const bool variable = sz == 0;   // StrA/StrW
+    const bool isStr = DataType::IsString(type);
+
+    u64 cur = offset;
+    for (size_t i = 0; i < count; i++) {
+        if (cur >= data_.size()) break;
+        const size_t avail = data_.size() - (size_t)cur;
+        // stringlerde NUL'a kadar tarama icin ust sinir; sabit tipler sz
+        const size_t cap = variable ? std::min<size_t>(avail, 256) : std::min<size_t>(sz, avail);
+        TypedValue tv = DataType::Decode(data_.data() + cur, cap, type, bitIndex);
+
+        char hdr[32];
+        snprintf(hdr, sizeof(hdr), "%012llX", (unsigned long long)(baseAddr_ + cur));
+        o << hdr << "  ";
+
+        // tuketilen ham baytlar (en fazla 16 goster)
+        const size_t used = std::min<size_t>(tv.ok && tv.usedBytes ? tv.usedBytes : cap, 16);
+        for (size_t k = 0; k < used; k++) o << Hex2(data_[cur + k]) << ' ';
+        for (size_t k = used; k < 16; k++) o << "   ";
+        if (used > 8) o << ' ';
+
+        o << " [" << DataType::Name(type) << "] ";
+        if (!tv.ok) {
+            o << "(" << tv.note << ")";
+        } else if (isStr) {
+            o << '"' << tv.value << '"';
+        } else {
+            o << tv.value;
+        }
+        if (tv.ok && !tv.note.empty()) o << "   ; " << tv.note;
+        o << '\n';
+
+        // sonraki degere adim: sabit -> sz, string -> tuketilen bayt, bit -> 1
+        const u64 step = variable ? std::max<u64>(tv.usedBytes ? tv.usedBytes : 1, 1)
+                                  : (u64)sz;
+        if (cur + step <= cur) break;   // tasma koru
+        cur += step;
+    }
+    return o.str();
+}
+
 std::string HexTool::RenderCode(u64 offset, size_t rows, int bits) const {
     std::ostringstream o;
     if (!ok_) { o << "(kaynak hazir degil)\n"; return o.str(); }
@@ -787,6 +835,15 @@ bool HexTool::ParseQuery(const std::string& query, std::vector<u8>& bytes,
     wildcard.clear();
     std::string q = str::Trim(query);
     if (q.empty()) { err = "bos sorgu"; return false; }
+
+    // 1) tipli deger on eki: "f32:3.14", "i32:1337", "u64:0x7FF6", "bool:1",
+    //    "str:Hello", "str16:Selam", "vec3:1 2 3" (little-endian)
+    //    Tip on eki degilse err bos kalir ve klasik yollar devam eder.
+    {
+        std::string terr;
+        if (DataType::TryTypedQuery(q, bytes, wildcard, terr)) return true;
+        if (!terr.empty()) { err = terr; return false; }
+    }
 
     // text:... -> ASCII
     if (q.rfind("text:", 0) == 0) {

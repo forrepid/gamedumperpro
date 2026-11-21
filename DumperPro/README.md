@@ -147,7 +147,12 @@ matching editor build.
   patch previewing (unknown opcodes fall back to `db 0x..`); it is not a
   replacement for IDA/Capstone.
 - Search: wildcard AOB (`--hex-search "48 8B 05 ?? ?? ?? ?? 48 85 C0"`),
-  space-less hex (`488B05????????`) and `text:...` ASCII search.
+  space-less hex (`488B05????????`), `text:...` ASCII search and **typed value
+  search** (little-endian, DataType module): `f32:3.14`, `i32:1337`, `u64:0x7FF6...`,
+  `bool:1`, `str:Hello`, `str16:Selam`, `vec3:1 2 3`.
+- Typed value view: `--hex-type 0x1000:16:float` interprets 16 float values from
+  an offset (types: `i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool bit str str16
+  ptr vec2 vec3 vec4`; central DataType registry, same set on the web platform).
 - Edit/save: `--hex-patch "0x1000=90 E9;0x2000=CC"` patches the buffer with an
   undo stack; `--hex-save out.exe` writes a patched COPY (the original file is
   never modified), and `--hex-live` applies the patches to the live process via
@@ -250,6 +255,11 @@ DumperPro.exe --hex --file Game.exe --hex-view 0x1000 --hex-code 0x140001000:24
 DumperPro.exe --hex --file Game.exe --hex-search "48 8B 05 ?? ?? ?? ?? 48 85 C0"
 DumperPro.exe --hex --file Game.exe --hex-patch "0x1000=90 E9" --hex-save patched.exe
 
+:: typed values (DataType module, little-endian)
+DumperPro.exe --hex --file Game.exe --hex-type 0x1000:16:float --hex-type 0x2000:8:ptr
+DumperPro.exe --hex --file Game.exe --hex-search "f32:3.14"
+DumperPro.exe --hex --file Game.exe --hex-search "vec3:1 2 3"
+
 :: hex/aob: live process module viewing (no patches applied)
 DumperPro.exe --hex --process Game.exe --module Game.exe --hex-view 0x140001000
 :: live patching (only on software you own; writes to the target's memory)
@@ -274,7 +284,8 @@ DumperPro.exe --hex --process Game.exe --hex-patch "0x140001000=90" --hex-live
 | `--hex-view <off[:rows]>` | hex+ASCII table | - |
 | `--hex-code <off[:rows]>` | x86/x64 code view (`--hex-bits 32/64`) | - |
 | `--hex-binary <off[:bytes]>` | bit-level binary view | - |
-| `--hex-search <aob>` | AOB/hex/`text:` search, all matches | - |
+| `--hex-type <off[:n:t]>` | typed value view (`0x1000:16:float`) | type `u32` |
+| `--hex-search <aob>` | AOB/hex/`text:`/`text16:` + typed value (`f32:3.14`, `i32:1337`, `vec3:1 2 3`) search | - |
 | `--hex-patch <spec>` | patch buffer: `"0x1000=90 E9;0x2000=CC"` | - |
 | `--hex-save <file>` | write the patched copy to a NEW file | - |
 | `--hex-live` | apply patches to the live process via memory write | off |

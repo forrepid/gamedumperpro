@@ -1,6 +1,7 @@
 // ----------------------------------------------------------------------------
 // /api/uploads/[id]/mem - bellek dump islemleri (LeechCore/MemProcFS benzeri)
 //   POST { action: "search", pattern }              -> bellek icinde AOB
+//   POST { action: "search", type, value }          -> tipli deger arama (LE)
 //   POST { action: "dump", base, size?, name? }     -> PE kurtar -> yeni analiz
 // ----------------------------------------------------------------------------
 
@@ -13,7 +14,7 @@ import { db } from "@/lib/db";
 import { saveBuffer } from "@/lib/storage";
 import { runAnalysis } from "@/lib/analysis/queue";
 import { analyzeMemoryDump, searchMemory, recoverModulePe } from "@/lib/analysis/mem";
-import { parseAobPattern } from "@/lib/analysis/hex";
+import { parseAobPattern, resolveDataType, encodeValue } from "@/lib/analysis/hex";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -43,7 +44,7 @@ export async function POST(
   if (!loaded) return NextResponse.json({ ok: false, error: "Yukleme bulunamadi" }, { status: 404 });
   const { row, buf } = loaded;
 
-  let body: { action?: string; pattern?: string; base?: number; size?: number; name?: string };
+  let body: { action?: string; pattern?: string; base?: number; size?: number; name?: string; type?: string; value?: string };
   try {
     body = await req.json();
   } catch {
@@ -102,20 +103,36 @@ export async function POST(
   }
   const { device, minidump } = mres;
 
-  // --- bellek icinde AOB ---
+  // --- bellek icinde AOB / tipli deger ---
   if (body.action === "search") {
-    const parsed = parseAobPattern(body.pattern ?? "");
-    if (!parsed.bytes.length || parsed.error) {
-      return NextResponse.json({ ok: false, error: parsed.error ?? "bos desen" }, { status: 400 });
+    let bytes: (number | null)[];
+    let label = body.pattern ?? "";
+    let encoded: string | undefined;
+    if (body.type) {
+      const t = resolveDataType(body.type);
+      if (!t) {
+        return NextResponse.json({ ok: false, error: `bilinmeyen veri tipi: "${body.type}"` }, { status: 400 });
+      }
+      const enc = encodeValue(t, body.value ?? body.pattern ?? "");
+      if (!enc.ok) return NextResponse.json({ ok: false, error: enc.error }, { status: 400 });
+      bytes = enc.bytes;
+      label = `${body.type}: ${body.value ?? body.pattern ?? ""}`;
+      encoded = enc.bytes.map((b) => b.toString(16).padStart(2, "0")).join(" ");
+    } else {
+      const parsed = parseAobPattern(body.pattern ?? "");
+      if (!parsed.bytes.length || parsed.error) {
+        return NextResponse.json({ ok: false, error: parsed.error ?? "bos desen" }, { status: 400 });
+      }
+      bytes = parsed.bytes;
     }
-    const hits = searchMemory(device, parsed.bytes, 256);
+    const hits = searchMemory(device, bytes, 256);
     // modul etiketi
     const modules = (a ? (JSON.parse(a.summary) as MemSummary).mem?.modules : undefined) ?? minidump?.modules.map((m) => ({ name: m.name, base: m.base, size: m.size, recoverable: false })) ?? [];
     const labeled = hits.map((h) => {
       const mod = modules.find((m) => h.va >= m.base && h.va < m.base + m.size);
       return { ...h, module: mod ? mod.name : undefined, rva: mod ? h.va - mod.base : undefined };
     });
-    return NextResponse.json({ ok: true, total: labeled.length, matches: labeled, scannedBytes: device.totalBytes });
+    return NextResponse.json({ ok: true, total: labeled.length, matches: labeled, scannedBytes: device.totalBytes, pattern: label, encoded });
   }
 
   // --- PE kurtar + yeni analiz ---

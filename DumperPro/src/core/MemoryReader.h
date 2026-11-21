@@ -34,11 +34,19 @@ public:
     inline bool ReadU64(u64 a, u64& v) { return Read(a, &v, 8); }
     inline bool ReadI32(u64 a, i32& v) { return Read(a, &v, 4); }
     inline bool ReadPtr(u64 a, u64& v) { return Read(a, &v, 8); }
+    // tipli okumalar (DataType modulu ile ayni yorum: little-endian, IEEE 754)
+    inline bool ReadI8 (u64 a, i8& v)   { return Read(a, &v, 1); }
+    inline bool ReadI16(u64 a, i16& v)  { return Read(a, &v, 2); }
+    inline bool ReadI64(u64 a, i64& v)  { return Read(a, &v, 8); }
+    inline bool ReadF32(u64 a, float& v){ return Read(a, &v, 4); }
+    inline bool ReadF64(u64 a, double& v){ return Read(a, &v, 8); }
 
     inline u64 ReadU64Or(u64 a, u64 def = 0) { u64 v = def; ReadU64(a, v); return v; }
     inline u32 ReadU32Or(u64 a, u32 def = 0) { u32 v = def; ReadU32(a, v); return v; }
     inline i32 ReadI32Or(u64 a, i32 def = 0) { i32 v = def; ReadI32(a, v); return v; }
     inline u64 ReadPtrOr(u64 a, u64 def = 0) { u64 v = def; ReadPtr(a, v); return v; }
+    inline float ReadF32Or(u64 a, float def = 0.0f) { float v = def; ReadF32(a, v); return v; }
+    inline double ReadF64Or(u64 a, double def = 0.0) { double v = def; ReadF64(a, v); return v; }
 
     template <class T> inline T ReadVal(u64 va) { T v{}; Read(va, &v, sizeof(T)); return v; }
 

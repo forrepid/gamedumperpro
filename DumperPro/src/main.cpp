@@ -32,6 +32,7 @@
 #include "file/StaticAnalyzer.h"
 #include "net/HttpServer.h"
 #include "hex/HexTool.h"
+#include "core/DataType.h"
 #include "il2cpp/Il2CppBinary.h"
 #include "il2cpp/Il2CppDummyDll.h"
 #include "core/ModuleRegistry.h"
@@ -65,7 +66,8 @@ struct Options {
     std::vector<std::string> hexViews;      // "0x1000" veya "0x1000:8" (off:rows)
     std::vector<std::string> hexCodes;      // "0x140001000:24"
     std::vector<std::string> hexBinaries;   // "0x1000:16" (off:bytes)
-    std::vector<std::string> hexSearches;   // AOB / text:... / text16:...
+    std::vector<std::string> hexTypes;      // "0x1000:16:float" (off:count:type)
+    std::vector<std::string> hexSearches;   // AOB / text:... / text16:... / f32:... / i32:...
     std::vector<std::string> hexPatches;    // "0x1000=90 E9;0x2000=CC"
     fs::path hexSave;                       // yamali kopyayi dosyaya yaz
     bool hexLive = false;                   // yamalari canli prosese uygula
@@ -99,9 +101,11 @@ static void PrintUsage() {
         "  DumperPro.exe --file libil2cpp.so  --metadata global-metadata.dat\n"
         "    (APK input auto-pairs metadata + libil2cpp.so when both are present)\n"
         "\n"
-        "Live hex/byte/code/binary/AOB view-editor-save:\n"
+        "Live hex/byte/code/binary/typed-value/AOB view-editor-save:\n"
         "  DumperPro.exe --hex --file oyun.exe --hex-view 0x1000 --hex-code 0x140001000:16\n"
+        "  DumperPro.exe --hex --file oyun.exe --hex-type 0x1000:16:float --hex-type 0x2000:8:ptr\n"
         "  DumperPro.exe --hex --file oyun.exe --hex-search \"48 8B 05 ?? ?? ?? ?? 48 85 C0\"\n"
+        "  DumperPro.exe --hex --file oyun.exe --hex-search \"f32:3.14\" --hex-search \"str:Health\"\n"
         "  DumperPro.exe --hex --file oyun.exe --hex-patch \"0x1000=90 E9\" --hex-save patched.exe\n"
         "  DumperPro.exe --hex --process Game.exe --module Game.exe --hex-view 0x140001000\n"
         "  DumperPro.exe --hex --process Game.exe --hex-patch \"0x140001000=90\" --hex-live\n"
@@ -113,7 +117,12 @@ static void PrintUsage() {
         "  --hex-view <off[:r]>  hex+ascii table (rows r, default 16)\n"
         "  --hex-code <off[:r]>  x86/x64 code view (rows r)\n"
         "  --hex-binary <o[:b]>  bit-level binary view (bytes b)\n"
+        "  --hex-type <o[:n:t]>  typed value view: 0x1000:16:float -> 16 float values\n"
+        "                        types (little-endian): i8 i16 i32 i64 u8 u16 u32 u64,\n"
+        "                        f32/float f64/double bool bit str str16 ptr vec2 vec3 vec4\n"
         "  --hex-search <aob>    AOB search: \"48 8B 05 ?? ??\" / \"488B05????\" / text:str / text16:str\n"
+        "                        typed value: \"f32:3.14\" \"i32:1337\" \"u64:0x7FF6...\" \"bool:1\"\n"
+        "                        \"str:Hello\" \"str16:Selam\" \"vec3:1 2 3\"\n"
         "  --hex-patch <spec>    patch buffer: \"0x1000=90 E9;0x2000=CC\"\n"
         "  --hex-save <file>     write patched copy to a NEW file\n"
         "  --hex-live            apply patches to the live process via Write\n"
@@ -186,6 +195,7 @@ static bool ParseArgs(int argc, char** argv, Options& o, std::string& err) {
         else if (a == "--hex-view") { if (!next(o.hexViews.emplace_back())) return false; }
         else if (a == "--hex-code") { if (!next(o.hexCodes.emplace_back())) return false; }
         else if (a == "--hex-binary") { if (!next(o.hexBinaries.emplace_back())) return false; }
+        else if (a == "--hex-type") { if (!next(o.hexTypes.emplace_back())) return false; }
         else if (a == "--hex-search") { if (!next(o.hexSearches.emplace_back())) return false; }
         else if (a == "--hex-patch") { if (!next(o.hexPatches.emplace_back())) return false; }
         else if (a == "--hex-save") { std::string v; if (!next(v)) return false; o.hexSave = v; }
@@ -233,9 +243,10 @@ static bool ParseArgs(int argc, char** argv, Options& o, std::string& err) {
     // hex modu bir hedef gerektirir; serve ile kullanilamaz
     if (o.hex && !o.device.empty()) { err = "--hex cannot be combined with --device (no module model at device level)"; return false; }
     const bool anyHexAction = !o.hexViews.empty() || !o.hexCodes.empty() || !o.hexBinaries.empty() ||
+                              !o.hexTypes.empty() ||
                               !o.hexSearches.empty() || !o.hexPatches.empty() || o.hexLive || !o.hexSave.empty();
     if (o.hex && o.serve) { err = "--hex cannot be combined with --serve"; return false; }
-    if (o.hex && !anyHexAction) { err = "--hex needs an action: --hex-view/--hex-code/--hex-binary/--hex-search/--hex-patch"; return false; }
+    if (o.hex && !anyHexAction) { err = "--hex needs an action: --hex-view/--hex-code/--hex-binary/--hex-type/--hex-search/--hex-patch"; return false; }
     if (o.hexLive && modes != 1) { err = "--hex-live requires --process or --pid"; return false; }
     if (!o.hex && anyHexAction) { err = "hex actions require --hex"; return false; }
     return true;
@@ -627,6 +638,40 @@ static int RunHexMode(const Options& opt) {
         if (!bytes) bytes = 16;
         ShowView("BINARY VIEW (offset 0x" + HexOf(off) + ")",
                  hx->RenderBinary(off, (size_t)bytes));
+    }
+
+    // ---- typed value views: "0x1000" | "0x1000:16" | "0x1000:16:float" ----
+    for (const std::string& spec : opt.hexTypes) {
+        // off : count : type  (count default 16, type default u32)
+        std::vector<std::string> parts = str::Split(spec, ':');
+        if (parts.empty() || parts[0].empty()) {
+            Log::Warn("gecersiz --hex-type: %s", spec.c_str());
+            continue;
+        }
+        u64 off = 0;
+        if (!str::ParseU64(parts[0], off)) {
+            Log::Warn("gecersiz offset: %s", spec.c_str());
+            continue;
+        }
+        int count = 16;
+        if (parts.size() >= 2 && !parts[1].empty()) {
+            count = std::atoi(parts[1].c_str());
+            if (count <= 0 || count > 256) {
+                Log::Warn("gecersiz adet (1..256): %s", spec.c_str());
+                continue;
+            }
+        }
+        std::string typeStr = "u32";
+        if (parts.size() >= 3 && !parts[2].empty()) typeStr = parts[2];
+        DType t;
+        if (!DataType::FromName(typeStr, t)) {
+            Log::Warn("bilinmeyen tip '%s' (%s)", typeStr.c_str(), spec.c_str());
+            Log::Raw(DataType::TypeTable());
+            continue;
+        }
+        ShowView(std::string("TYPED VIEW (offset 0x") + HexOf(off) + ", tip " +
+                 DataType::Name(t) + ", " + std::to_string(count) + " deger)",
+                 hx->RenderTyped(off, t, (size_t)count));
     }
 
     // ---- searches ----

@@ -309,6 +309,16 @@ void SDKGenerator::EmitBasics(const fs::path& sdkDir) {
     os << "struct FMulticastScriptDelegate { uint8 UnknownData[0x10]; };\n";
     os << "\n";
     os << "// ----------------------------------------------------------------------------\n";
+    os << "// Float vector / rotation types (DataType: vec2/vec3/vec4 + frotator)\n";
+    os << "// Byte-exact layouts: 2/3/4/3 x float32 (little-endian).\n";
+    os << "// ----------------------------------------------------------------------------\n";
+    os << "\n";
+    os << "struct FVector2D                { float X; float Y; };\n";
+    os << "struct FVector                  { float X; float Y; float Z; };\n";
+    os << "struct FVector4                 { float X; float Y; float Z; float W; };\n";
+    os << "struct FRotator                 { float Pitch; float Yaw; float Roll; };\n";
+    os << "\n";
+    os << "// ----------------------------------------------------------------------------\n";
     os << "// Minimal UObject hierarchy\n";
     os << "// ----------------------------------------------------------------------------\n";
     os << "\n";

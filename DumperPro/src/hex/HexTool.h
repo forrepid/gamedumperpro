@@ -19,10 +19,16 @@
 //                    yol haritasi (jump table) okuma ve yama oncesi inceleme
 //                    icin tasarlanmistir.
 //
-// Yetenekler (search - AOB):
+// Yetenekler (search - AOB + tipli deger):
 //   - "48 8B 05 ?? ?? ?? ?? 48 85 C0" biciminde jokerli AOB ('??' / '?' joker)
 //   - bosluksuz hex ("488B05????????") ve "text:Merhaba" ASCII aramasi
+//   - tipli deger aramasi (little-endian): "f32:3.14", "i32:1337", "u64:0x7FF6",
+//     "bool:1", "str:Merhaba", "str16:Selam", "vec3:1 2 3" (DataType modulu)
 //   - tum eslesmeler (cap ile), mutlak VA + kaynak offset raporlanir
+//
+// Yetenekler (view - tipli deger):
+//   - RenderTyped: ofsetten itibaren N adet degist tipli yorum (float/int/
+//     bool/str/ptr/vec...); her satir VA + ham bayt + deger
 //
 // Yetenekler (edit/save):
 //   - Patch: buffer'a yama; her yama undo yiginina kaydedilir
@@ -44,6 +50,7 @@
 #pragma once
 #include "../framework.h"
 #include "core/MemoryReader.h"
+#include "core/DataType.h"
 
 namespace dumper {
 
@@ -86,12 +93,18 @@ public:
     std::string RenderCode(u64 offset, size_t rows, int bits) const;
     // bit duzeyinde ikilik gosterim
     std::string RenderBinary(u64 offset, size_t bytes) const;
+    // tipli deger gorunumu: ofsetten itibaren count adet degist tip yorumu
+    // (satir: VA + ham bayt + [tip] deger). bitIndex: DType::Bit icin 0..7.
+    std::string RenderTyped(u64 offset, DType type, size_t count,
+                            int bitIndex = 0) const;
 
     // ---- SEARCH (AOB / hex / text) ----
     // sorgu bicimleri:
     //   "48 8B 05 ?? ?? ?? ??"  jokerli AOB
     //   "488B05????????"        bosluksuz AOB
     //   "text:GameAssembly"     ASCII metin aramasi
+    //   "f32:3.14" / "i32:1337" / "bool:1" / "str:..." / "vec3:1 2 3"
+    //                           tipli deger aramasi (DataType::TryTypedQuery)
     static bool ParseQuery(const std::string& query, std::vector<u8>& bytes,
                            std::vector<bool>& wildcard, std::string& err);
     std::vector<HexSearchHit> Search(const std::vector<u8>& bytes,

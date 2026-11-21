@@ -1,7 +1,10 @@
 // ----------------------------------------------------------------------------
-// /api/uploads/[id]/hex - Hex/AOB sistemi
+// /api/uploads/[id]/hex - Hex/AOB/tipli-deger sistemi
 //   GET  ?off=&len=            -> hex gorunum (satirlar + RVA/VA)
-//   POST { action: "search", pattern, off?, len? }   -> AOB tarama (?? joker)
+//   POST { action: "search", pattern, off?, len? }          -> AOB tarama (?? joker)
+//   POST { action: "search", type, value }                  -> tipli deger arama
+//        (f32:3.14 / i32:1337 / bool:1 / str:... / vec3:1 2 3 - little-endian)
+//   POST { action: "decode", off, type, count?, bitIndex? } -> tipli deger yorumu
 //   POST { action: "patch",  patches: [{off, bytes}] } -> yamalari .dpr'a yaz
 //   POST { action: "save",   name }  -> yamali kopyayi yeni yukleme olarak kaydet
 // ----------------------------------------------------------------------------
@@ -13,7 +16,20 @@ import fs from "node:fs";
 import { db } from "@/lib/db";
 import { saveBuffer } from "@/lib/storage";
 import { runAnalysis } from "@/lib/analysis/queue";
-import { hexView, parseAobPattern, aobSearch, applyPatches, parsePatchJson, type HexPatch, type PatchRecord } from "@/lib/analysis/hex";
+import {
+  hexView,
+  parseAobPattern,
+  aobSearch,
+  applyPatches,
+  parsePatchJson,
+  resolveDataType,
+  decodeValue,
+  encodeValue,
+  DATA_TYPE_META,
+  type DataType,
+  type HexPatch,
+  type PatchRecord,
+} from "@/lib/analysis/hex";
 import type { PeInfo } from "@/lib/analysis/types";
 
 export const dynamic = "force-dynamic";
@@ -100,6 +116,10 @@ export async function POST(
     len?: number;
     patches?: { off: number; bytes: number[] }[];
     name?: string;
+    type?: string;
+    value?: string;
+    bitIndex?: number;
+    count?: number;
   };
   try {
     body = await req.json();
@@ -109,6 +129,27 @@ export async function POST(
 
   const pe = await getPeInfo(id);
   const rvaOf = rvaResolver(pe);
+
+  // --- tipli deger arama (f32:3.14 / i32:1337 / bool:1 / str:... / vec3:1 2 3) ---
+  if (body.action === "search" && body.type) {
+    const t = resolveDataType(body.type);
+    if (!t) {
+      return NextResponse.json({ ok: false, error: `bilinmeyen veri tipi: "${body.type}"` }, { status: 400 });
+    }
+    const enc = encodeValue(t, body.value ?? body.pattern ?? "");
+    if (!enc.ok) return NextResponse.json({ ok: false, error: enc.error }, { status: 400 });
+    const res = aobSearch(buf, enc.bytes, { off: body.off, len: body.len, limit: 256, imageBase: pe?.imageBase, rvaOf });
+    return NextResponse.json({
+      ok: true,
+      pattern: `${body.type}: ${body.value ?? body.pattern ?? ""}`,
+      type: t,
+      encoded: enc.bytes.map((b) => b.toString(16).padStart(2, "0")).join(" "),
+      total: res.matches.length,
+      truncated: res.truncated,
+      scanned: res.scanned,
+      matches: res.matches,
+    });
+  }
 
   // --- AOB arama ---
   if (body.action === "search") {
@@ -122,6 +163,43 @@ export async function POST(
       truncated: res.truncated,
       scanned: res.scanned,
       matches: res.matches,
+    });
+  }
+
+  // --- tipli deger yorumlama: ofsetten itibaren count adet deger ---
+  if (body.action === "decode") {
+    const t = resolveDataType(body.type ?? "u32");
+    if (!t) {
+      return NextResponse.json({ ok: false, error: `bilinmeyen veri tipi: "${body.type}"` }, { status: 400 });
+    }
+    const meta = DATA_TYPE_META[t as DataType];
+    const bitIndex = Math.max(0, Math.min(7, body.bitIndex ?? 0));
+    const count = Math.max(1, Math.min(256, body.count ?? 16));
+    const start = Math.max(0, Math.min(body.off ?? 0, buf.length));
+    const values: { off: number; hex: string; value: string; note?: string; error?: string }[] = [];
+    let cur = start;
+    for (let i = 0; i < count && cur < buf.length; i++) {
+      const d = decodeValue(buf, cur, t, { bitIndex });
+      values.push({
+        off: cur,
+        hex: d.bytes.map((b) => b.toString(16).padStart(2, "0")).join(" "),
+        value: d.ok ? d.value : "",
+        note: d.note,
+        error: d.error,
+      });
+      // sonraki degere adim: sabit -> size, string -> tuketilen bayt
+      const step = meta.size > 0 ? meta.size : Math.max(1, d.bytes.length);
+      if (step <= 0) break;
+      cur += step;
+    }
+    return NextResponse.json({
+      ok: true,
+      type: t,
+      typeLabel: meta.label,
+      off: start,
+      size: meta.size,
+      bitIndex: t === "bit" ? bitIndex : undefined,
+      values,
     });
   }
 
@@ -202,5 +280,5 @@ export async function POST(
     }
   }
 
-  return NextResponse.json({ ok: false, error: "Bilinmeyen islem (search|patch|save)" }, { status: 400 });
+  return NextResponse.json({ ok: false, error: "Bilinmeyen islem (search|decode|patch|save)" }, { status: 400 });
 }

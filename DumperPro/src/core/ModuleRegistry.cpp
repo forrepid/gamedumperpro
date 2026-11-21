@@ -37,7 +37,8 @@ void ModuleRegistry::RegisterBuiltins() {
     Register({"il2cpp",  "0.3.0", "Unity IL2CPP metadata v16-31 parser, binary match, DummyDll out"});
     Register({"file",    "0.3.0", "APK/ZIP/ELF/DEX/Mach-O/OAT-VDEX static analysis pipeline"});
     Register({"dump",    "0.3.0", "SDK header/struct generation (SDKGenerator + Dumps)"});
-    Register({"hex",     "0.3.0", "hex/code/binary view, AOB search, patch/undo/save (--hex)"});
+    Register({"hex",     "0.3.0", "hex/code/binary/typed view, AOB+typed search, patch/undo/save (--hex)"});
+    Register({"types",   "0.5.1", "central data-type registry: decode/encode i8..u64/f32/f64/bool/bit/str/str16/ptr/vec2-4 (LE)"});
     Register({"net",     "0.3.0", "--serve HTTP upload + analysis server"});
     Register({"config",  "0.3.0", "games.ini profiles + built-in offset profiles"});
     Register({"binfold", "0.1.0", "binary diff/similarity: WARP function GUIDs + constraint matching"});

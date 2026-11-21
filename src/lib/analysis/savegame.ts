@@ -840,9 +840,14 @@ function padByteOf(node: SavePropNode): number {
 
 function writeBody(w: Writer, node: SavePropNode): void {
   switch (node.kind) {
-    case "int": case "uint32": w.i32(Number(node.value ?? 0)); w.u8(padByteOf(node)); break;
-    case "int64": case "uint64": w.i64(Number(node.value ?? 0)); w.u8(padByteOf(node)); break;
-    case "int16": case "uint16": w.i16(Number(node.value ?? 0)); w.u8(padByteOf(node)); break;
+    // isaretsiz turler kendi yazicilarindan gecer (u32/u64/u16) — buyuk
+    // degerlerde i32/i64 kesme hatasi olmasin (byte-perfect yazim)
+    case "int": w.i32(Number(node.value ?? 0)); w.u8(padByteOf(node)); break;
+    case "uint32": w.u32(Number(node.value ?? 0)); w.u8(padByteOf(node)); break;
+    case "int64": w.i64(Number(node.value ?? 0)); w.u8(padByteOf(node)); break;
+    case "uint64": w.u64(Number(node.value ?? 0)); w.u8(padByteOf(node)); break;
+    case "int16": w.i16(Number(node.value ?? 0)); w.u8(padByteOf(node)); break;
+    case "uint16": w.u16(Number(node.value ?? 0)); w.u8(padByteOf(node)); break;
     case "int8": w.i8(Number(node.value ?? 0)); w.u8(padByteOf(node)); break;
     case "float": w.f32(Number(node.value ?? 0)); w.u8(padByteOf(node)); break;
     case "double": w.f64(Number(node.value ?? 0)); w.u8(padByteOf(node)); break;

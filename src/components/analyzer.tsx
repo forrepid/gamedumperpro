@@ -50,10 +50,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { tokenizeCodeLine, type HighlightState } from "@/lib/highlight";
+import { DATA_TYPE_GROUPS, resolveDataType, type DataType } from "@/lib/analysis/hex";
 import type { ExtractorId, ExtractorsInfo, GameFilesInfo, Il2CppBinaryInfo, MemInfo } from "@/lib/analysis/types";
 import CodegenTab from "@/components/codegen-tab";
 import SaveEditorTab from "@/components/save-editor-tab";
@@ -2454,13 +2456,20 @@ function ResultPanel({
               <p className="py-8 text-center text-xs text-zinc-500">Ilginç dize bulunamadi.</p>
             ) : (
               <div className="max-h-[420px] overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 scrollbar-thin">
-                <div className="grid gap-x-4 gap-y-0.5 font-mono text-[11px] text-zinc-400 lg:grid-cols-2">
+                <div className="grid gap-x-4 gap-y-1 font-mono text-[11px] text-zinc-400 lg:grid-cols-2">
                   {r.strings.map((s, i) => (
-                    <span key={i} className="truncate" title={s.value}>
-                      {s.value}
-                    </span>
+                    <div key={i} className="flex items-center gap-2" title={`${s.value} (${s.kind === "utf16" ? "UTF-16LE" : "ASCII"})`}>
+                      <Badge
+                        variant="outline"
+                        className={`shrink-0 px-1.5 py-0 text-[9px] ${s.kind === "utf16" ? "border-violet-700/60 text-violet-300" : "border-zinc-700 text-zinc-500"}`}
+                      >
+                        {s.kind === "utf16" ? "W" : "A"}
+                      </Badge>
+                      <span className="truncate">{s.value}</span>
+                    </div>
                   ))}
                 </div>
+                <p className="mt-2 text-[10px] text-zinc-600">W = UTF-16LE (genis), A = ASCII (tek bayt)</p>
               </div>
             )}
           </TabsContent>
@@ -2634,6 +2643,46 @@ interface MemSearchResponse {
   error?: string;
 }
 
+// tipli deger yorumlama cevabi (POST action:"decode")
+interface HexDecodeResponse {
+  ok: boolean;
+  type: string;
+  typeLabel?: string;
+  off: number;
+  size: number;
+  bitIndex?: number;
+  values: { off: number; hex: string; value: string; note?: string; error?: string }[];
+  error?: string;
+}
+
+/** gruptan tip secici (HexTab + MemTab ortak) */
+function DataTypeSelect({ value, onChange, ariaLabel, className }: {
+  value: string;
+  onChange: (t: string) => void;
+  ariaLabel: string;
+  className?: string;
+}) {
+  return (
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger aria-label={ariaLabel} className={`h-9 w-[190px] border-zinc-700 bg-zinc-950 font-mono text-xs text-zinc-200 ${className ?? ""}`}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent className="max-h-80 border-zinc-800 bg-zinc-950 text-zinc-200">
+        {DATA_TYPE_GROUPS.map((g) => (
+          <SelectGroup key={g.label}>
+            <SelectLabel className="text-[10px] uppercase tracking-wide text-zinc-500">{g.label}</SelectLabel>
+            {g.types.map((t) => (
+              <SelectItem key={t} value={t} className="font-mono text-xs focus:bg-zinc-800">
+                {t}
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
 function hex2(b: number): string {
   return b.toString(16).padStart(2, "0");
 }
@@ -2671,6 +2720,19 @@ function HexTab({ uploadId, onRefreshHistory, jump }: { uploadId: string; onRefr
   const [aob, setAob] = useState("");
   const [aobRes, setAobRes] = useState<HexSearchResponse | null>(null);
   const [aobLoading, setAobLoading] = useState(false);
+  // --- tip yorumlama (byte -> deger) ---
+  const [decType, setDecType] = useState("u32");
+  const [decOff, setDecOff] = useState("");
+  const [decCount, setDecCount] = useState("16");
+  const [decBit, setDecBit] = useState("0");
+  const [decRes, setDecRes] = useState<HexDecodeResponse | null>(null);
+  const [decLoading, setDecLoading] = useState(false);
+  // --- tipli deger arama ---
+  const [valType, setValType] = useState("i32");
+  const [valInput, setValInput] = useState("");
+  const [valRes, setValRes] = useState<HexSearchResponse | null>(null);
+  const [valEncoded, setValEncoded] = useState<string | undefined>(undefined);
+  const [valLoading, setValLoading] = useState(false);
 
   const fetchView = useCallback(
     async (target: number) => {
@@ -2832,6 +2894,57 @@ function HexTab({ uploadId, onRefreshHistory, jump }: { uploadId: string; onRefr
     void fetchView(n);
   };
 
+  // --- tip yorumla: ofsetten itibaren N adet degeri tipli oku ---
+  const runDecode = async () => {
+    const n = parseOffsetInput(decOff) ?? view?.off ?? 0;
+    const count = Math.max(1, Math.min(256, parseInt(decCount, 10) || 16));
+    const bitIndex = Math.max(0, Math.min(7, parseInt(decBit, 10) || 0));
+    setDecLoading(true);
+    try {
+      const res = await fetch(`/api/uploads/${uploadId}/hex`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "decode", off: n, type: decType, count, bitIndex }),
+      });
+      const data = (await res.json()) as HexDecodeResponse;
+      if (!data.ok) {
+        toast({ title: "Tip yorumlanamadi", description: data.error, variant: "destructive" });
+        return;
+      }
+      setDecRes(data);
+    } catch {
+      toast({ title: "Tip yorumlama hatasi", variant: "destructive" });
+    } finally {
+      setDecLoading(false);
+    }
+  };
+
+  // --- tipli deger arama: "3.14" (f32), "1337" (i32), "true" (bool), ... ---
+  const runValueSearch = async () => {
+    if (!valInput.trim()) return;
+    setValLoading(true);
+    setValRes(null);
+    setValEncoded(undefined);
+    try {
+      const res = await fetch(`/api/uploads/${uploadId}/hex`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "search", type: valType, value: valInput }),
+      });
+      const data = (await res.json()) as HexSearchResponse & { encoded?: string };
+      if (!data.ok) {
+        toast({ title: "Deger arama basarisiz", description: data.error, variant: "destructive" });
+        return;
+      }
+      setValRes(data);
+      setValEncoded(data.encoded);
+    } catch {
+      toast({ title: "Deger arama hatasi", variant: "destructive" });
+    } finally {
+      setValLoading(false);
+    }
+  };
+
   const navBtn = "h-9 w-9 border-zinc-700 text-zinc-300 hover:bg-zinc-800";
 
   return (
@@ -2944,6 +3057,86 @@ function HexTab({ uploadId, onRefreshHistory, jump }: { uploadId: string; onRefr
         </div>
       ) : null}
 
+      {/* tip yorumlama (byte -> deger) */}
+      <div className="rounded-lg border border-zinc-800 p-3">
+        <p className="mb-2 text-xs font-medium text-zinc-400">
+          Tip yorumla — baytlari secilen tip olarak oku (little-endian)
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <DataTypeSelect value={decType} onChange={setDecType} ariaLabel="Yorumlama tipi" />
+          <Input
+            value={decOff}
+            onChange={(e) => setDecOff(e.target.value)}
+            placeholder="ofset (bos = pencere basi)"
+            aria-label="Yorumlama offset"
+            className="h-9 w-44 border-zinc-700 bg-zinc-950 font-mono text-xs text-zinc-200"
+          />
+          {decType === "bit" && (
+            <Input
+              value={decBit}
+              onChange={(e) => setDecBit(e.target.value.replace(/[^0-7]/g, "").slice(0, 1))}
+              placeholder="bit 0-7"
+              aria-label="Bit indeks"
+              className="h-9 w-24 border-zinc-700 bg-zinc-950 font-mono text-xs text-zinc-200"
+            />
+          )}
+          {decType !== "str" && decType !== "str16" && (
+            <Input
+              value={decCount}
+              onChange={(e) => setDecCount(e.target.value.replace(/[^0-9]/g, "").slice(0, 3))}
+              placeholder="adet"
+              aria-label="Deger adedi"
+              className="h-9 w-20 border-zinc-700 bg-zinc-950 font-mono text-xs text-zinc-200"
+            />
+          )}
+          <Button
+            variant="outline"
+            disabled={decLoading}
+            onClick={() => void runDecode()}
+            className="h-9 border-zinc-700 px-3 text-zinc-300 hover:bg-zinc-800"
+          >
+            {decLoading ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Hash className="mr-1.5 h-3.5 w-3.5 text-emerald-400" />}
+            Yorumla
+          </Button>
+        </div>
+        {decRes && decRes.values.length > 0 && (
+          <div className="mt-3">
+            <p className="mb-1.5 font-mono text-[10px] text-zinc-500">
+              {decRes.type} ({decRes.typeLabel ?? decRes.type}) @ 0x{decRes.off.toString(16).toUpperCase()}
+              {decRes.type === "bit" && ` bit ${decRes.bitIndex ?? 0}`}
+            </p>
+            <div className="max-h-56 overflow-y-auto rounded-md border border-zinc-800 scrollbar-thin">
+              <table className="w-full min-w-[420px] text-left font-mono text-[11px]">
+                <thead className="sticky top-0 bg-zinc-950/90 text-zinc-500">
+                  <tr>
+                    <Th>Offset</Th>
+                    <Th>Baytlar</Th>
+                    <Th>Deger</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800/60 text-zinc-300">
+                  {decRes.values.map((v, i) => (
+                    <tr
+                      key={`${v.off}-${i}`}
+                      className="cursor-pointer transition-colors hover:bg-emerald-600/5"
+                      onClick={() => void fetchView(v.off)}
+                    >
+                      <Td mono>{hex(v.off)}</Td>
+                      <Td mono className="text-zinc-500">{v.hex || "-"}</Td>
+                      <Td mono className="text-emerald-300">
+                        {v.error ? <span className="text-amber-300">({v.error})</span> : v.value}
+                        {v.note && <span className="ml-2 text-[10px] text-zinc-600">{v.note}</span>}
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-1 text-[10px] text-zinc-600">degere tiklayin, hex pencere o offsete gider</p>
+          </div>
+        )}
+      </div>
+
       {/* bekleyen duzenlemeler + yama islemleri */}
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-2">
@@ -3015,6 +3208,78 @@ function HexTab({ uploadId, onRefreshHistory, jump }: { uploadId: string; onRefr
           {view && view.patches.length > 200 && <p className="mt-1 text-[10px] text-zinc-500">+{view.patches.length - 200} yama gizlendi</p>}
         </div>
       )}
+
+      {/* tipli deger arama */}
+      <div>
+        <p className="mb-2 text-xs font-medium text-zinc-400">Deger arama — tipli (little-endian)</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <DataTypeSelect value={valType} onChange={setValType} ariaLabel="Arama tipi" />
+          <Input
+            value={valInput}
+            onChange={(e) => setValInput(e.target.value)}
+            placeholder={valType === "vec3" ? "1 2 3" : valType === "bool" ? "true / false" : valType === "str" ? "Metin..." : valType === "f32" || valType === "f64" ? "3.14" : "1337"}
+            aria-label="Deger"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void runValueSearch();
+            }}
+            className="h-9 w-56 border-zinc-700 bg-zinc-950 font-mono text-xs text-zinc-200"
+          />
+          <Button
+            variant="outline"
+            disabled={valLoading || !valInput.trim()}
+            onClick={() => void runValueSearch()}
+            className="h-9 border-zinc-700 px-3 text-zinc-300 hover:bg-zinc-800"
+          >
+            {valLoading ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <ScanSearch className="mr-1.5 h-3.5 w-3.5 text-emerald-400" />}
+            Degerde Ara
+          </Button>
+          {valEncoded && (
+            <span className="font-mono text-[10px] text-zinc-600">desen: {valEncoded}</span>
+          )}
+        </div>
+        {valRes && (
+          <div className="mt-3">
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+              <span>{valRes.total} eslesme</span>
+              {valRes.truncated && (
+                <Badge className="bg-amber-500/15 text-[10px] text-amber-300 ring-1 ring-amber-500/40">ilk 256 gosteriliyor</Badge>
+              )}
+            </div>
+            {valRes.matches.length === 0 ? (
+              <p className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs text-zinc-500">Eslesme bulunamadi.</p>
+            ) : (
+              <div className="max-h-64 overflow-y-auto rounded-lg border border-zinc-800 scrollbar-thin">
+                <table className="w-full min-w-[420px] text-left font-mono text-[11px]">
+                  <thead className="sticky top-0 bg-zinc-950/90 text-zinc-500">
+                    <tr>
+                      <Th>Offset</Th>
+                      <Th>RVA</Th>
+                      <Th>Hex</Th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-800/60">
+                    {valRes.matches.map((m, i) => (
+                      <tr
+                        key={i}
+                        className="cursor-pointer text-zinc-300 transition-colors hover:bg-emerald-600/5"
+                        onClick={() => void fetchView(m.off)}
+                      >
+                        <Td mono>{hex(m.off)}</Td>
+                        <Td mono>{m.rva !== undefined ? hex(m.rva) : "-"}</Td>
+                        <Td>
+                          <span className="block max-w-[320px] truncate" title={m.hex}>
+                            {m.hex}
+                          </span>
+                        </Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* AOB arama */}
       <div>
@@ -3345,6 +3610,9 @@ function MemTab({
   const [pattern, setPattern] = useState("");
   const [searching, setSearching] = useState(false);
   const [res, setRes] = useState<MemSearchResponse | null>(null);
+  // tipli deger arama (int/float/bool/str/vec...)
+  const [mType, setMType] = useState("i32");
+  const [mValue, setMValue] = useState("");
 
   const dumpModule = async (base: number, name: string) => {
     setDumping(base);
@@ -3372,14 +3640,17 @@ function MemTab({
   };
 
   const runSearch = async () => {
-    if (!pattern.trim()) return;
+    if (!pattern.trim() && !mValue.trim()) return;
     setSearching(true);
     setRes(null);
     try {
+      const body = mValue.trim()
+        ? { action: "search", type: mType, value: mValue }
+        : { action: "search", pattern };
       const resp = await fetch(`/api/uploads/${uploadId}/mem`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "search", pattern }),
+        body: JSON.stringify(body),
       });
       const data = (await resp.json()) as MemSearchResponse;
       if (!data.ok) {
@@ -3526,21 +3797,38 @@ function MemTab({
 
       {/* bellek AOB arama */}
       <div>
-        <p className="mb-2 text-xs font-medium text-zinc-400">Bellek AOB arama (joker: ?? veya *)</p>
+        <p className="mb-2 text-xs font-medium text-zinc-400">Bellek arama — tipli deger (little-endian) veya AOB</p>
         <div className="flex flex-wrap items-center gap-2">
+          <DataTypeSelect value={mType} onChange={setMType} ariaLabel="Bellek arama tipi" />
+          <Input
+            value={mValue}
+            onChange={(e) => setMValue(e.target.value)}
+            placeholder={mType === "vec3" ? "1 2 3" : mType === "bool" ? "true / false" : mType === "str" ? "Metin..." : mType === "f32" || mType === "f64" ? "3.14" : "1337"}
+            aria-label="Bellek degeri"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void runSearch();
+            }}
+            className="h-9 w-56 border-zinc-700 bg-zinc-950 font-mono text-xs text-zinc-200"
+          />
+          <Button variant="outline" disabled={searching || !mValue.trim()} onClick={() => void runSearch()} className="h-9 border-emerald-700/50 bg-emerald-600/10 px-3 text-emerald-300 hover:bg-emerald-600/20">
+            {searching ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <ScanSearch className="mr-1.5 h-3.5 w-3.5" />}
+            Degerde Ara
+          </Button>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           <Input
             value={pattern}
             onChange={(e) => setPattern(e.target.value)}
-            placeholder="48 8B ??"
+            placeholder="AOB: 48 8B ??"
             aria-label="Bellek AOB desen"
             onKeyDown={(e) => {
               if (e.key === "Enter") void runSearch();
             }}
-            className="h-9 w-64 border-zinc-700 bg-zinc-950 font-mono text-xs text-zinc-200"
+            className="h-9 w-56 border-zinc-700 bg-zinc-950 font-mono text-xs text-zinc-200"
           />
           <Button variant="outline" disabled={searching || !pattern.trim()} onClick={() => void runSearch()} className="h-9 border-zinc-700 px-3 text-zinc-300 hover:bg-zinc-800">
             {searching ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <ScanSearch className="mr-1.5 h-3.5 w-3.5 text-emerald-400" />}
-            Bellekte Ara
+            AOB Ara
           </Button>
         </div>
         {res && (

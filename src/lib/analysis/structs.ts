@@ -13,8 +13,9 @@
 //     ureticisinde (sdkgen.ts) uygulanir.
 //
 // ONEMLI NOTLAR (ONEMLI NOTLAR - bu modul icin):
-//   1) Alan TURLERI tahminidir: isaretci/float ayrisimi yapilmaz; genislige
-//      gore isaretsiz tamsayi varsayilir (float olasiligi not ile bildirilir).
+//   1) Alan TURLERI tahminidir: isaretci/float ayrisimi SSE talimat ipuclarindan
+//      yapilir (movss -> float, movsd/comisd -> double); kalan genislikler
+//      isaretsiz tamsayi varsayilir. Ince ayirt etme canli dogrulama ister.
 //   2) `this` takibi tam register veri akisi analizi degildir; vftable
 //      referansi bulunan fonksiyondaki tum [reg+disp] erisimleri ayni sinifa
 //      yazilir (kabalama = yanlis pozitif olasiligi; reads sayisi guven verir).
@@ -45,7 +46,7 @@ export interface DeepCodeOutput {
 }
 
 interface ClassAcc {
-  offsets: Map<number, { size: number; reads: number }>;
+  offsets: Map<number, { size: number; reads: number; kind?: "float" | "double" }>;
   fnCount: number;
   maxSize: number;
 }
@@ -135,7 +136,7 @@ export function analyzeStructs(
         if (dispStr.startsWith("-")) disp = -disp;
         if (base === "rsp" || base === "rbp") continue; // yerel yigin - uye degil
         if (disp < 0 || disp > MAX_FIELD_OFFSET) continue;
-        const size = accessWidth(ins.text);
+        const size = accessKind(ins.text);
         if (!size) continue;
         const acc = ownerClass
           ? classAcc.get(ownerClass.name) ?? { offsets: new Map(), fnCount: 0, maxSize: 0 }
@@ -143,11 +144,16 @@ export function analyzeStructs(
         const cur = acc.offsets.get(disp);
         if (cur) {
           cur.reads++;
-          if (size > cur.size) cur.size = size;
+          if (size.size > cur.size) {
+            cur.size = size.size;
+            cur.kind = size.kind;
+          } else if (!cur.kind && size.kind && size.size === cur.size) {
+            cur.kind = size.kind;
+          }
         } else {
-          acc.offsets.set(disp, { size, reads: 1 });
+          acc.offsets.set(disp, { size: size.size, reads: 1, kind: size.kind });
         }
-        acc.maxSize = Math.max(acc.maxSize, disp + size);
+        acc.maxSize = Math.max(acc.maxSize, disp + size.size);
         if (ownerClass) classAcc.set(ownerClass.name, acc);
         else codeOnly.set(f.rva, acc);
       }
@@ -168,7 +174,7 @@ export function analyzeStructs(
     if (acc) {
       for (const [off, v] of [...acc.offsets.entries()].sort((a, b) => a[0] - b[0]).slice(0, 63)) {
         if (off === 0) continue; // vptr zaten var
-        fields.push({ name: `field_0x${off.toString(16).padStart(2, "0")}`, offset: off, size: v.size, type: widthType(v.size), reads: v.reads });
+        fields.push({ name: `field_0x${off.toString(16).padStart(2, "0")}`, offset: off, size: v.size, type: widthType(v.size, v.kind), reads: v.reads });
       }
     }
     structs.push({
@@ -193,7 +199,7 @@ export function analyzeStructs(
     const fields: StructField[] = [...acc.offsets.entries()]
       .sort((a, b) => a[0] - b[0])
       .slice(0, 64)
-      .map(([off, v]) => ({ name: `field_0x${off.toString(16).padStart(2, "0")}`, offset: off, size: v.size, type: widthType(v.size), reads: v.reads }));
+      .map(([off, v]) => ({ name: `field_0x${off.toString(16).padStart(2, "0")}`, offset: off, size: v.size, type: widthType(v.size, v.kind), reads: v.reads }));
     structs.push({
       name: `sub_${(pe.imageBase + fnRva).toString(16).toUpperCase()}_struct`,
       kind: "struct",
@@ -236,19 +242,26 @@ function rttiSkeleton(pe: PeInfo, rtti: RttiInfo | undefined): RecoveredStruct[]
   }));
 }
 
-/** insandin metninden erisim genisligi (bayt) cikarir. */
-function accessWidth(text: string): number | undefined {
-  if (/^(movsd|movups|movupd|movaps|movapd|movdqa|movdqu)( \(store\))?\b/.test(text)) return 16;
-  if (/^movss\b/.test(text)) return 4;
+/**
+ * insandin metninden erisim genisligi + tip ipucu cikarir.
+ * SSE skaler talimatlari float/double kanitidir: movss/addss -> float (4 B),
+ * movsd/comisd/ucomisd -> double (8 B). Paketlenmis SSE (movups/movaps/...)
+ * 16 bayt; digerleri register genisligi; imm-only -> dword varsayimi.
+ */
+function accessKind(text: string): { size: number; kind?: "float" | "double" } | undefined {
+  const head = text.replace(/\(.*$/, "").trim(); // "movss ... (store)" sonlari
+  if (/^(movss|addss|subss|mulss|divss|cmpss|ucomiss)\b/.test(head)) return { size: 4, kind: "float" };
+  if (/^(movsd|addsd|subsd|mulsd|divsd|comisd|ucomisd)\b/.test(head)) return { size: 8, kind: "double" };
+  if (/^(movups|movupd|movaps|movapd|movdqa|movdqu)\b/.test(head)) return { size: 16 };
   const body = text.replace(/;.*$/, "").trim();
   const sp = body.indexOf(" ");
   if (sp < 0) return undefined;
   const operands = body.slice(sp).split(",").map((s) => s.trim());
   for (const op of operands) {
     const w = regWidth(op);
-    if (w) return w;
+    if (w) return { size: w };
   }
-  return 4; // yalnizca-imm islenen: dword varsayimi
+  return { size: 4 }; // yalnizca-imm islenen: dword varsayimi
 }
 
 function regWidth(r: string): number | undefined {
@@ -265,12 +278,15 @@ function regWidth(r: string): number | undefined {
   return undefined;
 }
 
-function widthType(size: number): string {
+function widthType(size: number, kind?: "float" | "double"): string {
+  // SSE kaniti varsa tipi netle: movss erisimi -> float, movsd -> double
+  if (kind === "float") return "float";
+  if (kind === "double") return "double";
   switch (size) {
     case 1: return "uint8";
     case 2: return "uint16";
-    case 4: return "uint32"; // float olasiligi
-    case 8: return "uint64"; // ptr/float64 olasiligi
+    case 4: return "uint32"; // float olasiligi (SSE ipucu yoksa)
+    case 8: return "uint64"; // ptr/float64 olasiligi (SSE ipucu yoksa)
     case 16: return "uint8[16]";
     default: return `uint8[${size}]`;
   }
