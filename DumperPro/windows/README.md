@@ -228,6 +228,7 @@ ile sınırlanır (üst kap 512 MiB).
 | `--device file://...` 4 döndü | GNames bulunamadı | Sentetik/boş dump'ta **normal**; gerçek oyun dump'ında `games.ini`'ye `gnames =` satırı ekle (docs/LEECH.md) |
 | `Access denied` (`--file` TEST 4) | AV/kopyalama izni | Test PE alt testini atlar (SKIPPED) — sorun değil; `--help` kolonu yeter |
 | Çıkış 2 + `LcCreate failed for device '...'` | Cihaz stringi hatalı | Yazımı kontrol et: `fpga` (iki nokta yok), `usb3380:` (iki nokta var), `file://C:\yol\dosya` |
+| `... was unexpected at this time.` (bat çalışırken) | Klasör adında parantez (ör. `src (4)`) / özel karakter | Scriptler parantezli yollara dayanıklıdır (v0.4.2 kit); yine de sorun kalırsa klasörü parantezsiz yeniden adlandır (ör. `UnrealDumperX_src4`) ve o klasörden çalıştır |
 
 ---
 

@@ -33,6 +33,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) — semantik s�
   dallarında denenir; cl.exe yine bulunamazsa vswhere tanı günlüğü + beklenen
   kurulum yolları ekrana yazılır (uzaktan hata ayıklama için)
 
+### Düzeltildi — test-device.bat: parantezli klasör yolları (4. tur)
+- **`\UnrealDumperX\windows\leechcore.dll was unexpected at this time.`**:
+  `if defined LCDLL ( echo ... %LCDLL% ... )` bloğunda `%LCDLL%` parse
+  zamanında genişletiliyordu; klasör adındaki `(4)` parantezleri (`UnrealDumperX_src (4)`)
+  bloğu erken kapatıp kalan yolu "unexpected" token yapıyordu — build.bat
+  v0.4.2.1'de çözülen sınıfın aynısı, bu kez başka dosyada
+- **Yapısal çözüm**: `%LCDLL%` echo'su tek satırlık `if`'e taşındı (blok yok =
+  parantezli yol güvenli); TEST 4 PE alt testi `goto` akışına çevrildi —
+  aynı turda ikinci bir gizli bug da düzeltildi: blok içinde
+  `%ERRORLEVEL%` genişletilmesi **parse anındaki** (exe çalışmadan önceki)
+  değeri okuyordu, çıkış kodu yanlış raporlanıyordu
+- `EnableDelayedExpansion` bilinçli olarak **kullanılmadı**: fixture üretim
+  satırındaki `DMPPRO-TEST-SIG!` imzasının `!` karakteri delayed expansion'da
+  bozulurdu; goto-akışı + bloksuz echo kuralı yeterli
+- Kullanıcı çıktısından iki doğrulama: `get-leechcore.ps1` leechcore.dll'i
+  yerleştirdi; DumperPro.exe ön kontrolü sessiz geçti → **MSVC derleme
+  başarılı** (BinFold yaması gerçek makinede doğrulandı)
+
 ### Düzeltildi — BinFold.cpp C2027 (VS 2026 gerçek-makine 3. tur)
 - **`std::array<u8,16>` tanımsız tür**: BinFold.cpp `Guid` için `std::array`
   kullanıyordu ama `<array>` include edilmemişti — MSVC STL'de `<utility>`

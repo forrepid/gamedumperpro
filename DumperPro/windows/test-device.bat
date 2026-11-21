@@ -15,6 +15,12 @@ rem   TEST 3/4 : usb3380: canli DMA probe (donanim yok -> cikis 2, zarif hata)
 rem   TEST 4/4 : baz cizgisi: --help (cikis 0) + --file notepad.exe (PE okuma)
 rem
 rem Kullanim: test-device.bat          (bu klasorden; loglar testlog_*.log)
+rem
+rem NOT (yol-guvenli): klasor adinda parantez olan yerlesimlerde de calisir
+rem      (orn. "UnrealDumperX_src (4)"). Kural: %CD% / %LCDLL% gibi parantez
+rem      icerebilen degerler yalnizca blok DIKinda echo'lanir; blok icinde
+rem      %ERRORLEVEL% genisletilmez (parse-zamani tuzagi). TEST 4 PE alt testi
+rem      goto-akislidir.
 rem ============================================================================
 setlocal EnableExtensions
 cd /d "%~dp0"
@@ -39,9 +45,11 @@ rem --- on kontrol: leechcore.dll ----------------------------------------------
 set "LCDLL="
 if exist "leechcore.dll" set "LCDLL=%CD%\leechcore.dll"
 if not defined LCDLL for %%i in (leechcore.dll) do if not "%%~$PATH:i"=="" set "LCDLL=%%~$PATH:i"
-if defined LCDLL (
-    echo [*] leechcore.dll: %LCDLL%
-) else (
+rem YOL-GUVENLI: tek satirlik if - %LCDLL% (parantezli yol olabilir) blok icinde
+rem genisletilirse "(4)" gibi bir klasor adi bloku erken kapatir ve
+rem "was unexpected at this time" hatasi verir. Tek satir = blok yok = guvenli.
+if defined LCDLL echo [*] leechcore.dll: %LCDLL%
+if not defined LCDLL (
     echo [!] leechcore.dll bulunamadi - TEST 1 basarisiz olacak.
     echo     Kurulum: powershell -ExecutionPolicy Bypass -File get-leechcore.ps1
 )
@@ -152,21 +160,23 @@ set "T4=PASS"
 echo   -> --help cikis kodu: %RC4%  (beklenen: 0)
 if not "%RC4%"=="0" set "T4=FAIL"
 
+rem YOL-GUVENLI goto-akisi: blok icinde %ERRORLEVEL% genisletilirse deger
+rem blokun PARSE anindan gelir (exe calismadan onceki deger) - yanlis cikis
+rem kodu okunur. Bu yuzden PE alt testi bloksuz, duz akisla yazildi.
 set "T4PE=SKIPPED"
 copy /y "%SystemRoot%\System32\notepad.exe" "notepad_test.exe" >nul 2>nul
-if exist "notepad_test.exe" (
-    echo   -> Calistiriliyor: %EXE% --file notepad_test.exe --out out_t4
-    "%EXE%" --file "notepad_test.exe" --out "out_t4" > "testlog_t4_pe.log" 2>&1
-    set "RC4PE=%ERRORLEVEL%"
-    set "T4PE=RAN"
-)
-if "%T4PE%"=="RAN" (
-    set "T4PE=PASS"
-    echo   --file cikis kodu: %RC4PE%  ^(beklenen: 4 = GNames not found; notepad UE oyunu degildir^)
-    if not "%RC4PE%"=="0" if not "%RC4PE%"=="4" if not "%RC4PE%"=="5" set "T4PE=FAIL"
-    findstr /C:"File mode:" "testlog_t4_pe.log" >nul 2>nul || set "T4PE=FAIL"
-)
-if "%T4PE%"=="SKIPPED" echo   -> notepad.exe kopyalanamadi (izin/antivirus) - PE alt testi atlandi, --help yeterli
+if not exist "notepad_test.exe" goto T4NoPE
+echo   -> Calistiriliyor: %EXE% --file notepad_test.exe --out out_t4
+"%EXE%" --file "notepad_test.exe" --out "out_t4" > "testlog_t4_pe.log" 2>&1
+set "RC4PE=%ERRORLEVEL%"
+set "T4PE=PASS"
+if not "%RC4PE%"=="0" if not "%RC4PE%"=="4" if not "%RC4PE%"=="5" set "T4PE=FAIL"
+findstr /C:"File mode:" "testlog_t4_pe.log" >nul 2>nul || set "T4PE=FAIL"
+echo   --file cikis kodu: %RC4PE%  (beklenen: 4 = GNames not found; notepad UE oyunu degildir)
+goto T4PEDone
+:T4NoPE
+echo   -> notepad.exe kopyalanamadi (izin/antivirus) - PE alt testi atlandi, --help yeterli
+:T4PEDone
 if "%T4PE%"=="FAIL" set "T4=FAIL"
 if "%T4%"=="PASS" (
     echo   [PASS] TEST 4
