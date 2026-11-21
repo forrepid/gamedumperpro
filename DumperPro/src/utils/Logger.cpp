@@ -3,6 +3,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <io.h>   // _isatty/_fileno (MSVC C3861 duzeltmesi)
 #endif
 
 namespace dumper {

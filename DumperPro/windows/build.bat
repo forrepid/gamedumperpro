@@ -51,7 +51,7 @@ if not exist "..\src\main.cpp" (
 if not exist obj mkdir obj
 
 echo [*] Derleniyor: MSVC x64, /std:c++20 /EHsc /O2 ...
-cl /nologo /std:c++20 /EHsc /O2 /utf-8 /W3 ^
+cl /nologo /std:c++20 /EHsc /O2 /utf-8 /W3 /D_CRT_SECURE_NO_WARNINGS ^
    /I..\src ^
    ..\src\*.cpp ^
    ..\src\core\*.cpp ..\src\sig\*.cpp ..\src\ue\*.cpp ..\src\il2cpp\*.cpp ^

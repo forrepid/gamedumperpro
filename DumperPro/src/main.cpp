@@ -818,7 +818,8 @@ int main(int argc, char** argv) {
                           devMax ? Hex(devMax).c_str() : "unknown");
                 targetMod.name = reader->TargetName();
                 targetMod.base = kDeviceScanBase; // reader rejects near-null PAs
-                targetMod.size = scanSize;
+                // kDeviceScanCap (512 MiB) u32'ye sigar - MSVC C4244 icin acik cast
+                targetMod.size = (u32)scanSize;
                 leechRawScan = true;
             } else {
                 FailWithHint("no modules found in target", "target may be protected; try --kernel or file mode");

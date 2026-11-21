@@ -175,6 +175,9 @@ private:
     }
 
     bool readPageShim(u64 pa, u8* dst, size_t size) {
+        // kPage Read() govdesinde yerel tanimlidir; shim kendi sabitini tasiyacak
+        // (MSVC C2065: bildirimi yapilmamis tanimlayici - Linux dalindan bagimsiz).
+        constexpr u64 kPage = 4096; // 4K sayfa granularitesi
         std::vector<u8> page(kPage); // cagri basina yerel - is parcasi guvenligi
         size_t done = 0;
         while (done < size) {

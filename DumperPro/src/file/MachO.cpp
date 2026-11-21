@@ -5,20 +5,39 @@
 // ============================================================================
 #include "file/MachO.h"
 #include "utils/StrUtil.h"
+#include <cstring>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 namespace dumper {
 
 namespace {
 
 // --- endian-safe okuyucular ------------------------------------------------
+// GCC/Clang: __builtin_bswap*; MSVC: _byteswap_* (intrin.h). Tasinabilir sarmalayici.
+inline u32 Bswap32(u32 v) {
+#if defined(_MSC_VER)
+    return _byteswap_ulong(v);
+#else
+    return __builtin_bswap32(v);
+#endif
+}
+inline u64 Bswap64(u64 v) {
+#if defined(_MSC_VER)
+    return _byteswap_uint64(v);
+#else
+    return __builtin_bswap64(v);
+#endif
+}
 u32 Rd32T(const u8* d, bool big) {
     u32 v; memcpy(&v, d, 4);
-    if (big) v = __builtin_bswap32(v);
+    if (big) v = Bswap32(v);
     return v;
 }
 u64 Rd64T(const u8* d, bool big) {
     u64 v; memcpy(&v, d, 8);
-    if (big) v = __builtin_bswap64(v);
+    if (big) v = Bswap64(v);
     return v;
 }
 

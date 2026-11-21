@@ -32,6 +32,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) — semantik s�
 - **UI**: "Canlı Yaz (orijinal dosyayı güncelle)" anahtarı + onay diyaloğu +
   yedek/doğrulama/uygulanan-değişiklik paneli (`eski → yeni`)
 
+### Düzeltildi — Windows/MSVC (1a gerçek-makine testi, ilk tur)
+- **LeechReader.cpp C2065 `kPage`**: Windows dalında `kPage` yalnız `Read()`
+  gövdesinde yereldi; `readPageShim()` artık kendi 4K sabitini taşıyor (hata
+  yalnız gerçek MSVC derlemesinde görünüyordu — g++ yalnız Linux dalını derler)
+- **MachO.cpp C3861 `__builtin_bswap32/64`**: tasinabilir `Bswap32/Bswap64`
+  sarmalayıcıları — MSVC: `_byteswap_ulong/_byteswap_uint64` (intrin.h),
+  GCC/Clang: builtin
+- **Logger.cpp C3861 `_isatty`**: Windows dalına `<io.h>` include eklendi
+- **main.cpp C4244**: `targetMod.size = (u32)scanSize` açık cast
+  (`kDeviceScanCap` 512 MiB, u32'ye güvenli)
+- **build.bat**: `/D_CRT_SECURE_NO_WARNINGS` (strncpy C4996 gürültüsünü kısar)
+- g++ regresyon derlemesi + `--modules` / `--bindiff` smoke testleri temiz
+
 ## [0.4.0] — 2026-11-20
 
 ### Eklendi — Modül sistemi (2-B)
