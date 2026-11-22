@@ -60,6 +60,8 @@ struct Options {
     bool json = false;       // JSON outputs (names/objects/analysis report)
     u16 servePort = 8420;
     int probeCount = 400;
+    bool listProcesses = false; // --list-processes: canli proses listesi + motor ipuclari
+    bool deepScan = false;      // --deep: UE surum dizesini bellekte dogrula
 
     // ---- hex/aob view-editor-save ----
     bool hex = false;
@@ -87,6 +89,8 @@ static void PrintUsage() {
         "Usage:\n"
         "  DumperPro.exe --process Game.exe            attach to a running process\n"
         "  DumperPro.exe --pid 1234                    attach by pid\n"
+        "  DumperPro.exe --list-processes              list running processes with engine hints\n"
+        "  DumperPro.exe --list-processes --deep       verify UE version from live memory\n"
         "  DumperPro.exe --file Game-Win64-Shipping.exe      offline analysis of a PE file\n"
         "  DumperPro.exe --file oyun.apk               static analysis: APK/ZIP/ELF/DEX\n"
         "  DumperPro.exe --file global-metadata.dat    Unity IL2CPP metadata dump\n"
@@ -137,6 +141,8 @@ static void PrintUsage() {
         "                        call-graph constraint matching, similarity score)\n"
         "  --bindiff-json <f>    with --bindiff: also write a machine-readable JSON report\n"
         "  --modules             list engine modules (registry) and exit\n"
+        "  --list-processes      list running processes + engine hints (UE / Unity IL2CPP)\n"
+        "  --deep                with --list-processes: verify UE version from live memory\n"
         "  --json                machine-readable JSON outputs (names.json, objects.json,\n"
         "                        analysis_report.json) alongside the text dumps. functions.json\n"
         "                        + result.json (web platform import bundle) are written\n"
@@ -174,6 +180,8 @@ static bool ParseArgs(int argc, char** argv, Options& o, std::string& err) {
         if (a == "--help" || a == "-h") { PrintUsage(); exit(0); }
         else if (a == "--list-profiles") { PrintProfiles(); exit(0); }
         else if (a == "--modules") { PrintModules(); exit(0); }
+        else if (a == "--list-processes") { o.listProcesses = true; }
+        else if (a == "--deep") { o.deepScan = true; }
         else if (a == "--process") { if (!next(o.process)) return false; }
         else if (a == "--pid") {
             std::string v; if (!next(v)) return false;
@@ -236,6 +244,12 @@ static bool ParseArgs(int argc, char** argv, Options& o, std::string& err) {
 
     int modes = (o.process.empty() ? 0 : 1) + (o.pid ? 1 : 0) + (o.file.empty() ? 0 : 1) +
                 (o.device.empty() ? 0 : 1) + (o.serve ? 1 : 0) + (o.bindiffA.empty() ? 0 : 1);
+    if (o.listProcesses) {
+        // list modu baska hedeflerle kombine edilemez (exit-once komutu, --modules gibi)
+        if (modes > 0) { err = "--list-processes cannot be combined with a target (--process/--pid/--file/--device/--serve/--bindiff)"; return false; }
+        return true;
+    }
+    if (o.deepScan) { err = "--deep requires --list-processes"; return false; }
     if (modes == 0) { err = "no target: use --process, --pid, --file, --device, --serve or --bindiff"; return false; }
     if (modes > 1) { err = "only one of --process / --pid / --file / --device / --serve / --bindiff can be used"; return false; }
     if (!o.bindiffA.empty() && o.bindiffB.empty()) { err = "--bindiff needs two files: --bindiff <fileA> <fileB>"; return false; }
@@ -443,6 +457,239 @@ static int RunIl2CppPairMode(const Options& opt, const std::string& gameName) {
              opt.file.filename().string(), opt.metadata.filename().string()));
     Log::Ok("Cikti klasoru: %s", outDir.string().c_str());
     return matched ? 0 : 3;
+}
+
+// ---------------------------------------------------------------------------
+// Canli IL2CPP hatti (0.5.2): --process/--pid + --metadata global-metadata.dat
+// Il2CppDumper'in "canli yarisi": IL2CPP modulu (GameAssembly.dll) hedef
+// prosesin bellekte mapped imaji olarak okunur, RAW PE dosya duzenine geri
+// acilir (ModuleImage::UnmapToRawFile) ve metadata+binary eslestirme hattinin
+// TAMAMI (Il2CppBinaryMatch + DummyDll) yeniden kullanilir. Paketli/sifreli
+// GameAssembly.dll diskten okunamayan oyunlarda tek yol budur.
+// ---------------------------------------------------------------------------
+static int RunIl2CppLiveMode(const Options& opt) {
+    Log::Banner("DumperPro - Canli IL2CPP (process + metadata)");
+
+    // 1) metadata (diskten)
+    std::error_code ec;
+    if (!fs::exists(opt.metadata, ec) || ec) {
+        FailWithHint("metadata dosyasi bulunamadi: " + opt.metadata.string(),
+                     "Unity IL2CPP projesinde assets/bin/Data/Managed/Metadata/ altindadir");
+        return 2;
+    }
+    std::ifstream mf(opt.metadata, std::ios::binary);
+    if (!mf.good()) { FailWithHint("metadata okunamadi", ""); return 2; }
+    std::vector<u8> mdata((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
+    Il2Metadata meta;
+    if (!Il2CppMetadataParser::Parse(mdata.data(), mdata.size(), meta) || !meta.valid) {
+        FailWithHint("metadata parse edilemedi: " + meta.lastError,
+                     "desteklenen surumler: metadata v16..31");
+        return 4;
+    }
+    Log::Ok("Metadata OK: surum %s (%s)", meta.versionStr.c_str(), meta.unityHint.c_str());
+
+    // 2) canli hedef
+    std::unique_ptr<IMemoryReader> reader = CreateProcessReader(opt.process, opt.pid, opt.kernel);
+    if (!reader || !reader->IsOK()) {
+        FailWithHint("cannot open target: " + (reader ? reader->LastError() : "?"),
+                     "run as Administrator or check the process name");
+        return 2;
+    }
+    Log::Info("Process mode: %s%s", reader->TargetName().c_str(),
+              opt.kernel ? " [kernel-assisted]" : "");
+
+    // 3) IL2CPP modulunu sec: --module verilirse o; yoksa bilinen adlar
+    std::vector<ModuleInfo> mods = reader->Modules();
+    if (mods.empty()) {
+        FailWithHint("no modules in target", "target may be protected; try --kernel");
+        return 3;
+    }
+    ModuleInfo target;
+    bool found = false;
+    if (!opt.moduleName.empty()) {
+        for (const ModuleInfo& m : mods) {
+            if (str::Contains(str::Lower(m.name), str::Lower(opt.moduleName))) { target = m; found = true; break; }
+        }
+        if (!found) { FailWithHint("module not found: " + opt.moduleName, "list modules with --verbose"); return 3; }
+    } else {
+        static const char* kIl2Names[] = { "gameassembly", "libil2cpp", "il2cpp" };
+        for (const char* k : kIl2Names) {
+            for (const ModuleInfo& m : mods) {
+                if (str::Contains(str::Lower(m.name), k)) { target = m; found = true; break; }
+            }
+            if (found) break;
+        }
+        if (!found) {
+            FailWithHint("IL2CPP module not found (GameAssembly.dll / libil2cpp.so)",
+                         "add --module <name>, or list modules with --verbose");
+            return 3;
+        }
+    }
+
+    // 4) mapped imaji oku + RAW PE duzenine geri ac
+    ModuleImage mod;
+    if (!mod.LoadFromReader(*reader, target)) {
+        FailWithHint("cannot read module image: " + target.name, "try --kernel");
+        return 3;
+    }
+    std::vector<u8> raw;
+    if (!mod.UnmapToRawFile(raw)) {
+        FailWithHint("mapped image cannot be converted to raw PE layout (bad section table)",
+                     "the module may be packed; file mode with an on-disk copy is more reliable");
+        return 4;
+    }
+    Log::Info("Mapped image -> raw PE: %s base=%s size=%s", target.name.c_str(),
+              Hex(target.base).c_str(), str::HumanSize(raw.size()).c_str());
+
+    // 5) eslestirme (Il2CppDumper'in ikinci yarisi, tam ayni hattin yeniden kullanimi)
+    Il2BinaryResult binres;
+    const bool matched = Il2CppBinaryMatch::Match(raw.data(), raw.size(), meta, binres);
+    if (!matched) {
+        FailWithHint("binary eslestirme basarisiz: " + binres.lastError,
+                     "metadata ile prosesin kullandigi build ayni olmali (surumler birebir eslesmelidir)");
+    } else {
+        Log::Ok("Binary eslestirme BASARILI (canli): %u / %llu metod adresi cozuldu (govdesiz %u)",
+                binres.resolvedCount, (unsigned long long)meta.methods.size(), binres.nullCount);
+        if (binres.metadataRegistrationFound)
+            Log::Ok("Il2CppType tablosu cozuldu (types=%u) - dump.cs gercek tipler iceriyor",
+                    binres.typesCount);
+    }
+
+    // 6) ciktilar
+    fs::path outDir = opt.outDir.empty()
+        ? fs::path("DumperPro_Out") / (str::SanitizeIdent(reader->TargetName()) + "_il2cpp_live_" + TimeStampDir())
+        : opt.outDir;
+    fs::create_directories(outDir, ec);
+
+    Il2CppMetadataParser::WriteOutputs(meta, outDir, opt.metadata.filename().string());
+    Il2CppBinaryMatch::WriteOutputs(meta, binres, outDir, target.name,
+                                    opt.metadata.filename().string(), raw.data(), raw.size());
+    Il2CppDummyDll::WriteOutputs(meta, binres, outDir, raw.data(), raw.size());
+
+    // ham PE imaji (offline yeniden kosum icin; --json ile)
+    if (opt.json) {
+        const fs::path rawFile = outDir / (str::SanitizeIdent(target.name) + "_live_raw.bin");
+        std::ofstream rf(rawFile, std::ios::binary | std::ios::trunc);
+        if (rf.good()) {
+            rf.write((const char*)raw.data(), (std::streamsize)raw.size());
+            Log::Ok("ham PE imaji yazildi: %s", rawFile.string().c_str());
+        }
+    }
+
+    // 7) result.json (web platform import manifesti; status=il2cpp)
+    {
+        ResultManifest rm;
+        rm.mode = opt.kernel ? "kernel" : "process";
+        rm.target = opt.process.empty() ? ("pid:" + std::to_string(opt.pid)) : opt.process;
+        rm.game = reader->TargetName();
+        rm.moduleName = target.name;
+        rm.moduleBase = target.base;
+        rm.moduleSize = target.size;
+        rm.status = "il2cpp";
+        rm.artifacts = {"dump.cs", "script.json", "il2cpp_report.txt"};
+        if (opt.json) rm.artifacts.push_back("gameassembly_live_raw.bin");
+        if (WriteResultManifest(outDir / "result.json", rm))
+            Log::Ok("result.json yazildi (web platform import manifesti, status=il2cpp)");
+    }
+
+    Log::Raw("");
+    Log::Raw(Il2CppBinaryMatch::BuildBinaryReport(meta, binres, target.name,
+                                                  opt.metadata.filename().string()));
+    Log::Ok("Cikti klasoru: %s", outDir.string().c_str());
+    return matched ? 0 : 3;
+}
+
+// ---------------------------------------------------------------------------
+// --list-processes (0.5.2): canli proses listesi + motor ipuclari.
+// Hizli katman modul/imaj adlarindan ipucu uretir; --deep UE surum dizesini
+// hedefin bellek imajindan dogrular. --json ile DumperPro_Out/processes.json.
+// ---------------------------------------------------------------------------
+static void PrintJsonEsc(std::ostream& os, const std::string& s) {
+    os << '"';
+    for (char c : s) {
+        switch (c) {
+            case '"':  os << "\\\""; break;
+            case '\\': os << "\\\\"; break;
+            case '\n': os << "\\n";  break;
+            case '\r': os << "\\r";  break;
+            case '\t': os << "\\t";  break;
+            default:
+                if ((u8)c < 0x20) {
+                    char b[8];
+                    snprintf(b, sizeof(b), "\\u%04X", (unsigned)(u8)c);
+                    os << b;
+                } else {
+                    os << c;
+                }
+        }
+    }
+    os << '"';
+}
+
+static int RunListProcesses(const Options& opt) {
+    Log::Banner(std::string("DumperPro - Canli Proses Listesi") + (opt.deepScan ? " (deep)" : ""));
+
+    const auto procs = ListLiveProcesses(opt.deepScan);
+    if (procs.empty()) {
+        FailWithHint("proses listesi alinamadi (Toolhelp snapshot basarisiz)",
+                     "run as Administrator");
+        return 2;
+    }
+
+    // ipucu verilenler once, sonra pid sirasi (okunabilir tablo)
+    std::vector<ProcessListEntry> sorted = procs;
+    std::stable_sort(sorted.begin(), sorted.end(), [](const ProcessListEntry& a, const ProcessListEntry& b) {
+        return (!a.hint.empty()) > (!b.hint.empty());
+    });
+
+    fprintf(stdout, "\n  %-8s %-34s %-5s %-13s %s\n", "PID", "AD", "MODUL", "MOTOR", "DETAY");
+    fprintf(stdout, "  %s\n", std::string(86, '-').c_str());
+    size_t hinted = 0;
+    for (const ProcessListEntry& e : sorted) {
+        if (!e.hint.empty()) hinted++;
+        fprintf(stdout, "  %-8u %-34.34s %-5zu %-13.13s %s%s%s\n",
+                e.pid, e.name.c_str(), e.moduleCount,
+                e.hint.empty() ? "-" : e.hint.c_str(),
+                e.hintDetail.c_str(),
+                e.attachable ? "" : " [korumali]",
+                e.deep && e.hint.empty() ? " (bellek taramasi ipucu bulamadi)" : "");
+    }
+    fprintf(stdout, "\n  %zu proses (%zu motor ipucli); attach icin: DumperPro.exe --pid <pid> | --process <ad>\n",
+            sorted.size(), hinted);
+    if (!opt.deepScan)
+        fprintf(stdout, "  UE surumunu bellekten dogrulamak icin: DumperPro.exe --list-processes --deep\n");
+
+    // JSON cikti (--json): DumperPro_Out/processes.json
+    if (opt.json) {
+        std::error_code ec;
+        fs::path outDir = opt.outDir.empty() ? fs::path("DumperPro_Out") : opt.outDir;
+        fs::create_directories(outDir, ec);
+        const fs::path jsonFile = outDir / "processes.json";
+        std::ofstream jf(jsonFile, std::ios::binary | std::ios::trunc);
+        if (jf.good()) {
+            jf << "{\"format\":\"dumperpro-processes\",\"version\":1,\"tool\":\"DumperPro "
+               << kDumperProVersion << "\",\"deep\":" << (opt.deepScan ? "true" : "false")
+               << ",\"count\":" << sorted.size() << ",\"processes\":[\n";
+            for (size_t i = 0; i < sorted.size(); i++) {
+                const ProcessListEntry& e = sorted[i];
+                jf << "  {\"pid\":" << e.pid << ",\"name\":";
+                PrintJsonEsc(jf, e.name);
+                jf << ",\"modules\":" << e.moduleCount << ",\"hint\":";
+                PrintJsonEsc(jf, e.hint);
+                jf << ",\"detail\":";
+                PrintJsonEsc(jf, e.hintDetail);
+                jf << ",\"attachable\":" << (e.attachable ? "true" : "false")
+                   << ",\"deep\":" << (e.deep ? "true" : "false") << "}";
+                if (i + 1 < sorted.size()) jf << ",";
+                jf << "\n";
+            }
+            jf << "]}\n";
+            Log::Ok("processes.json yazildi -> %s", jsonFile.string().c_str());
+        } else {
+            Log::Warn("processes.json yazilamadi: %s", jsonFile.string().c_str());
+        }
+    }
+    return 0;
 }
 
 static void WriteSignatureFiles(const std::string& game, const SigFinder& sf, const UEVersion& ver, const fs::path& outDir) {
@@ -779,10 +1026,16 @@ int main(int argc, char** argv) {
         return RunHexMode(opt);
     }
 
+    // ---- canli proses listesi (--list-processes): 0.5.2 ----
+    if (opt.listProcesses) {
+        return RunListProcesses(opt);
+    }
+
     // ---- serve mode: online dosya yukleme (tarayici -> http://127.0.0.1:<port>) ----
     if (opt.serve) {
         Log::Banner("DumperPro - Online Dosya Analiz Sunucusu");
         Log::Info("Adres     : http://127.0.0.1:%u  (Ctrl+C ile kapatilir)", opt.servePort);
+        Log::Info("Canli     : ana sayfada 'Canli Hedefler' - proses listesi + tek tik dump");
         Log::Info("Raporlar  : DumperPro_Out/serve/");
         Log::Info("Formatlar : exe / dll / sys / apk / so / dex / zip / metadata / vdex / oat");
         HttpServer srv(opt.servePort);
@@ -801,6 +1054,13 @@ int main(int argc, char** argv) {
     if (!opt.file.empty() && !opt.metadata.empty()) {
         const std::string gname = opt.file.stem().string();
         return RunIl2CppPairMode(opt, gname);
+    }
+
+    // ---- canli IL2CPP modu (0.5.2): --process/--pid + --metadata ----
+    // IL2CPP modulu prosesin bellekten okunur (mapped), RAW PE duzenine acilir
+    // ve eslestirme hatti yeniden kullanilir. Detay: RunIl2CppLiveMode()
+    if ((!opt.process.empty() || opt.pid) && !opt.metadata.empty()) {
+        return RunIl2CppLiveMode(opt);
     }
 
     // ---- reader ----

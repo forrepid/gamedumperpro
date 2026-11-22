@@ -58,6 +58,26 @@ std::unique_ptr<IMemoryReader> CreateProcessReader(const std::string& procName, 
 std::unique_ptr<IMemoryReader> CreateFileReader(const fs::path& file);
 
 // ---------------------------------------------------------------------------
+// Canli proses listesi (--list-processes / serve GET /api/processes)
+// ---------------------------------------------------------------------------
+struct ProcessListEntry {
+    u32 pid = 0;
+    std::string name;          // image ad (Game.exe)
+    size_t moduleCount = 0;    // yuklu modul sayisi (0 = moduller gorunmedi / korumali)
+    std::string hint;          // "UE 5.1" | "UE 4.27" | "Unity IL2CPP" | "Unity Mono" | "Unity" | "UE Editor"
+    std::string hintDetail;    // ipucu kaynagi ("module GameAssembly.dll", "image name", "string ++UE5+Release-5.1.1")
+    bool attachable = false;   // OpenProcess(READ) ile acilabildimi
+    bool deep = false;         // deep bellek taramasi calisti mi
+};
+
+// Calisan prosesleri listeler. Hizli katman her zaman modul-ad heuristikleriyle
+// ipucu uretir (GameAssembly.dll -> Unity IL2CPP, *-Shipping.exe -> UE, ...).
+// deepScan=true: attach edilebilen exe'lerde ana modul imaji kademeli okunup
+// UE surum dizesi ("++UE5+Release-5.1.1") bellekte dogrulanir.
+// maxDeep: deep taramada en fazla kac proses taranir (CPU/IO feneri).
+std::vector<ProcessListEntry> ListLiveProcesses(bool deepScan, size_t maxDeep = 96);
+
+// ---------------------------------------------------------------------------
 // ModuleImage: local copy of a module using UNIFORM addressing.
 //   Data is always stored in "memory image layout": Data offset == RVA.
 //   - process mode : snapshot of the mapped module (RVA == offset already)
@@ -72,6 +92,13 @@ public:
 
     bool LoadFromFile(const fs::path& file);
     bool LoadFromReader(IMemoryReader& r, const ModuleInfo& m);
+
+    // mapped (bellek) imajini RAW PE dosya duzenine geri acar (canli IL2CPP hatti).
+    // Il2CppBinaryMatch::Match PE dosya layout'u bekler (RVA != file offset);
+    // process'ten okunan imaj ise RVA == offset'tir. Bu donusum section tablosunu
+    // kullanir: headers + her section'in mapped[va..va+min(vs,rawSize)] verisi
+    // raw[rawOff..] konumuna geri yazilir.
+    bool UnmapToRawFile(std::vector<u8>& raw) const;
 
     inline u32 SizeOfImage() const { return pe ? pe->SizeOfImage() : (u32)Data.size(); }
     inline u64 RvaToVa(u32 rva) const { return Base + rva; }

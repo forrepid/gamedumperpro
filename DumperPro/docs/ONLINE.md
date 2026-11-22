@@ -154,6 +154,96 @@ semalari da uretir (roadmap 2.1: JSON cikti secenekleri).
 
 ---
 
+## 4.1 Canli hedefler (0.5.2): proses secimi + canli veri cikarma
+
+Canli attach (`--process/--pid`) v0.1'den beri vardi; 0.5.2 ile **kesif + secim +
+tek tik dump** katmanlari eklendi. Uc ayri erisim noktasi vardir ve hepsi ayni
+canli veri cikarma hattini kullanir (UE: GNames -> GObjects -> GWorld -> SDK;
+Unity: canli IL2CPP metadata eslestirme).
+
+### 4.1.1 CLI: --list-processes [--deep]
+
+```
+DumperPro.exe --list-processes            -> calisan prosesler + motor ipuclari
+DumperPro.exe --list-processes --deep     -> UE surumu bellekten dogrulanir
+DumperPro.exe --list-processes --json     -> DumperPro_Out/processes.json
+```
+
+Ornek tablo:
+
+```
+  PID      AD                                 MODUL MOTOR         DETAY
+  --------------------------------------------------------------------------------------
+  8820     MyGame-Win64-Shipping.exe          87    UE Game?      image name *-shipping.exe
+  9320     UnityGame.exe                      142   Unity IL2CPP  module GameAssembly.dll
+  6104     MyGame-Win64-Shipping.exe          87    UE 5.1        string ++UE5+Release-5.1.1
+```
+
+- **Hizli katman** (her zaman): proses basina modul snapshot'i (`TH32CS_SNAPMODULE`);
+  `GameAssembly.dll` -> Unity IL2CPP (kesin), `unityplayer.dll`(+mono) -> Unity
+  Mono/Unity, `UE4Editor/UE5Editor` -> UE Editor, `*-Shipping.exe/-Client.exe/...`
+  -> UE Game?. `OpenProcess(READ)` testi ile attachable durumu da tabloda ([korumali]).
+- **Deep katman** (`--deep`): aday proseslerde (ipucu bosek/kararsiz VEYA UE Game?,
+  ana modul >= 4 MB, kesin Unity ipucli olanlar atlanir) ana modul imaji 1 MB'lik
+  parcalarda (tavan 32 MB) okunur ve `++UE4/5+Release-x.y.z` dizesi bellekte aranir.
+  Bulunursa "UE 5.1" ipucu + kaynak dize yazilir.
+- JSON semasi: `{"format":"dumperpro-processes","version":1,"deep":bool,"count":N,
+  "processes":[{"pid","name","modules","hint","detail","attachable","deep"}]}`
+- Sinirlar: korumali proseslerde modul listesi gorunmez (moduleCount=0); --deep UE
+  surumunu yalnizca ana modulun ilk 32 MB'indaki dizeden dogrular (monolitik
+  surumler okunur; nadir durumlarda dize daha ileride ise bulunamaz).
+
+### 4.1.2 Canli IL2CPP: --process/--pid + --metadata
+
+Il2CppDumper'in "canli yarisi": IL2CPP modulu (GameAssembly.dll / libil2cpp.so)
+hedef prosesin bellek imaji olarak okunur (mapped layout), `ModuleImage::UnmapToRawFile`
+ile RAW PE dosya duzenine geri acilir ve metadata eslestirme hattinin TAMAMI
+(CodeRegistration/MetadataRegistration taramasi -> metod adresleri + gercek tip
+isimleri + DummyDll C# stub'lari) calistirilir.
+
+```
+DumperPro.exe --process Game.exe --metadata global-metadata.dat
+DumperPro.exe --pid 1234 --module GameAssembly.dll --metadata global-metadata.dat --json
+```
+
+- Neden onemli: diskteki GameAssembly.dll paketli/sifreli olan oyunlarda statik
+  eslestirme calismaz; bellekteki mapped imaj acilmis halde durur.
+- Cikti: `<oyun>_il2cpp_live_<zaman>/` altinda `dump.cs`, `script.json`,
+  `il2cpp_report.txt`, DummyDll klasoru; `--json` ile ek olarak ham PE imaji
+  (`<modul>_live_raw.bin`); `result.json` **status=il2cpp** manifesti (web platform
+  import sekmesi bu durumu teal rozetle gosterir).
+
+### 4.1.3 Serve modu: /api/processes + /api/dump (tek tik canli dump)
+
+`--serve` ana sayfasinda **"Canli Hedefler"** bolumu vardir; sayfa acilir acilmaz
+liste otomatik cekilir.
+
+| Rota | Islev |
+|---|---|
+| `GET /api/processes` | canli proses listesi (4.1.1'deki JSON semasi) |
+| `GET /api/processes?deep=1` | UE surumunu bellekten dogrula (deep katman) |
+| `POST /api/dump` | govde: `{"pid":N,"module":"...","noSdk":bool,"metadata":"..."}` |
+
+`POST /api/dump` **self-spawn** desenini kullanir: DumperPro.exe kendini
+`--pid N --json --out DumperPro_Out/serve/live_<zaman>_pid<N>` argumanlariyla
+subprocess olarak yeniden baslatir (CreateProcessA + stdout/stderr pipe yakalama,
+10 dakika tavan). Böylece UE hattinin tamamı (GNames/GObjects/GWorld/SDK/
+functions.json/result.json) web sayfasindan tek tikla, bakim gerektirmeden kosar:
+
+```
+{"ok":true,"exitCode":0,"outDir":"DumperPro_Out/serve/live_20251121_143022_pid8820",
+ "cmd":"\"C:\\...\\DumperPro.exe\" --pid 8820 --json --out \"...\"",
+ "result":{ ...result.json icerigi... }, "log":"...dump logu..."}
+```
+
+- Guvenlik: rota yalnizca 127.0.0.1 baglamasinda sunulur; self-spawn yalnizca kendi
+  exe'sini kendi argumanlariyla baslatir (kabuk calistirmasi yok); Windows disi
+  yapilarda rota zarif 400 doner (canli proses erisimi Win32 API'ye baglidir).
+- Sonraki adim: `outDir` icerisindeki `result.json` + `functions.json` dosyalarini
+  web platformunun "DumperPro Import" sekmesine yukleyin (ZIP de kabul edilir).
+
+---
+
 ## 5. Kaynaklar ve dogrulama
 
 Format spesifikasyonlari (uygulamalar bu dokumanlara karsi yazildi):

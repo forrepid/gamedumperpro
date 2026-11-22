@@ -479,6 +479,187 @@ std::unique_ptr<IMemoryReader> CreateProcessReader(const std::string& procName, 
     return std::make_unique<ProcessReader>(targetPid, targetName);
 }
 
+// ---------------------------------------------------------------------------
+// ListLiveProcesses - canli proses listesi (--list-processes / serve /api/processes)
+// ---------------------------------------------------------------------------
+namespace {
+
+struct ListWork {
+    ProcessListEntry e;
+    u64 mainBase = 0;   // ana modul VA (deep tarama icin)
+    u32 mainSize = 0;   // ana modul boyutu
+};
+
+// ipucu kurallari: modul adlari + imaj adi -> motor ipucusu (lower-case girdi)
+void ApplyHintRules(ProcessListEntry& e, const std::vector<std::string>& modLower) {
+    bool hasGameAssembly = false, hasUnityPlayer = false, hasMono = false,
+         hasUeEditor = false, hasUeDll = false;
+    for (const std::string& m : modLower) {
+        if (m == "gameassembly.dll")                 hasGameAssembly = true;
+        else if (m == "unityplayer.dll")             hasUnityPlayer = true;
+        else if (m.rfind("mono-2.0-bdwgc.dll", 0) == 0 || m == "mono.dll") hasMono = true;
+        else if (m.rfind("ue4editor", 0) == 0 || m.rfind("ue5editor", 0) == 0 ||
+                 m == "unrealeditor.exe")            hasUeEditor = true;
+        else if (m == "ue4editor.exe" || m == "ue5editor.exe") hasUeEditor = true;
+        else if (m == "ue4.dll" || m == "ue5.dll")   hasUeDll = true;
+    }
+    const std::string exeLower = str::Lower(e.name);
+    auto ueNamePattern = [&](std::string& detail) {
+        // Foo-Win64-Shipping.exe / Foo-WinGDK-Shipping.exe / Foo-Client.exe ...
+        static const char* kSufs[] = { "-shipping.exe", "-win64-shipping.exe", "-wingdk-shipping.exe",
+                                       "-win32-shipping.exe", "-client.exe", "-game.exe", "-test.exe" };
+        for (const char* suf : kSufs) {
+            if (str::EndsWith(exeLower, suf)) {
+                detail = std::string("image name *") + suf;
+                return true;
+            }
+        }
+        return false;
+    };
+
+    if (hasGameAssembly) {
+        e.hint = "Unity IL2CPP";
+        e.hintDetail = "module GameAssembly.dll";
+    } else if (hasUnityPlayer && hasMono) {
+        e.hint = "Unity Mono";
+        e.hintDetail = "module unityplayer.dll + mono";
+    } else if (hasUnityPlayer) {
+        e.hint = "Unity";
+        e.hintDetail = "module unityplayer.dll (Mono/IL2CPP belirsiz)";
+    } else if (hasUeEditor) {
+        e.hint = "UE Editor";
+        e.hintDetail = "module UE4Editor/UE5Editor";
+    } else if (hasUeDll) {
+        e.hint = "UE";
+        e.hintDetail = "module UE4.dll/UE5.dll";
+    } else {
+        std::string detail;
+        if (ueNamePattern(detail)) {
+            e.hint = "UE Game?";
+            e.hintDetail = detail;
+        }
+    }
+}
+
+// kademeli ana modul taramasi: "++UE4/5+Release-x.y.z" dizesini bellekte dogrular.
+// 1 MB'lik parcalar halinde (toplam 32 MB'e kadar) okur, bulununca durur.
+bool DeepDetectUeVersion(HANDLE hProc, u64 mainBase, u32 mainSize,
+                         ProcessListEntry& e) {
+    constexpr u64 kChunk   = 1ull << 20;
+    constexpr u64 kMaxRead = 32ull << 20;
+    const char* needles[2] = { "++UE4+Release-", "++UE5+Release-" };
+    constexpr size_t kNeedleLen = 14; // iki ipte de ayni uzunluk
+
+    const u64 total = std::min<u64>(mainSize, kMaxRead);
+    std::vector<u8> buf;
+    buf.reserve((size_t)total);
+    size_t scanned = 0; // bu offsetten onceki kisim zaten tarandi
+
+    for (u64 done = 0; done < total; done += kChunk) {
+        const u64 take = std::min<u64>(kChunk, total - done);
+        const size_t before = buf.size();
+        buf.resize(before + (size_t)take);
+        SIZE_T got = 0;
+        if (!ReadProcessMemory(hProc, (LPCVOID)(uintptr_t)(mainBase + done),
+                               buf.data() + before, (SIZE_T)take, &got) || got == 0) {
+            buf.resize(before); // okunamayan parca: atla
+            continue;
+        }
+        buf.resize(before + (size_t)got);
+
+        for (const char* nd : needles) {
+            const size_t from = scanned > (kNeedleLen - 1) ? scanned - (kNeedleLen - 1) : 0;
+            size_t pos = std::string_view((const char*)buf.data() + from, buf.size() - from).find(nd);
+            if (pos != std::string_view::npos) {
+                const size_t abs = from + pos + kNeedleLen;
+                // surum dizeleri: 5.1.1 / 4.27.2-0-...
+                std::string ver;
+                for (size_t i = abs; i < buf.size() && ver.size() < 16; i++) {
+                    const char c = (char)buf[i];
+                    if ((c >= '0' && c <= '9') || c == '.') ver.push_back(c);
+                    else break;
+                }
+                if (!ver.empty()) {
+                    // "5.1.1" -> "5.1" (ana surum.ipucu)
+                    const size_t dot2 = ver.find('.', ver.find('.') + 1);
+                    e.hint = "UE " + (dot2 == std::string::npos ? ver : ver.substr(0, dot2));
+                    e.hintDetail = std::string("string ++") + (nd[4] == '5' ? "UE5" : "UE4") + "+Release-" + ver;
+                    return true;
+                }
+            }
+        }
+        scanned = buf.size();
+    }
+    return false;
+}
+
+} // namespace
+
+std::vector<ProcessListEntry> ListLiveProcesses(bool deepScan, size_t maxDeep) {
+    std::vector<ProcessListEntry> out;
+    std::vector<ProcEntry> procs;
+    if (!SnapshotProcesses(procs)) return out;
+
+    const u32 self = (u32)GetCurrentProcessId();
+    std::vector<ListWork> work;
+    work.reserve(procs.size());
+
+    for (const ProcEntry& p : procs) {
+        if (!p.pid || p.pid == self) continue;
+        ListWork w;
+        w.e.pid = p.pid;
+        w.e.name = p.name;
+        work.push_back(std::move(w));
+    }
+
+    // modul sayisi + ham adlar (ipucu kurallarina girdi)
+    for (ListWork& w : work) {
+        std::vector<std::string> modLower;
+        const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, (DWORD)w.e.pid);
+        if (snap == INVALID_HANDLE_VALUE) continue;
+        bool haveMain = false;
+        MODULEENTRY32W me{};
+        me.dwSize = sizeof(me);
+        if (Module32FirstW(snap, &me)) {
+            do {
+                if (!me.modBaseAddr || !me.modBaseSize) continue;
+                w.e.moduleCount++;
+                const std::string lower = str::Lower(WideToUtf8Win(me.szModule));
+                modLower.push_back(lower);
+                if (!haveMain && str::EndsWith(lower, ".exe")) {
+                    haveMain = true;
+                    w.mainBase = (u64)(uintptr_t)me.modBaseAddr;
+                    w.mainSize = me.modBaseSize;
+                }
+            } while (Module32NextW(snap, &me));
+        }
+        CloseHandle(snap);
+        ApplyHintRules(w.e, modLower);
+    }
+
+    // attach edilebilme + opsiyonel deep tarama
+    size_t deepDone = 0;
+    for (ListWork& w : work) {
+        HANDLE h = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, (DWORD)w.e.pid);
+        if (h) {
+            w.e.attachable = true;
+            if (deepScan && deepDone < maxDeep &&
+                w.mainBase && w.mainSize >= 4u * 1024 * 1024 &&
+                w.e.hint != "Unity IL2CPP" && w.e.hint != "Unity Mono" &&
+                (w.e.hint.empty() || w.e.hint == "UE Game?" || w.e.hint == "Unity" || w.e.hint == "UE")) {
+                w.e.deep = true;
+                deepDone++;
+                DeepDetectUeVersion(h, w.mainBase, w.mainSize, w.e);
+            }
+            CloseHandle(h);
+        }
+    }
+
+    out.reserve(work.size());
+    for (ListWork& w : work) out.push_back(std::move(w.e));
+    return out;
+}
+
 } // namespace dumper
 
 #else // !defined(_WIN32)
@@ -492,6 +673,12 @@ std::unique_ptr<IMemoryReader> CreateProcessReader(const std::string& procName, 
     (void)kernelAssisted;
     Log::Err("process mode requires a Windows build (Win32 API unavailable on this host)");
     return nullptr;
+}
+
+std::vector<ProcessListEntry> ListLiveProcesses(bool deepScan, size_t maxDeep) {
+    (void)deepScan;
+    (void)maxDeep;
+    return {};
 }
 
 } // namespace dumper

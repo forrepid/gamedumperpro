@@ -97,6 +97,32 @@ bool ModuleImage::LoadFromFile(const fs::path& file) {
     return true;
 }
 
+bool ModuleImage::UnmapToRawFile(std::vector<u8>& raw) const {
+    raw.clear();
+    if (!pe || !pe->Valid() || Data.empty()) return false;
+
+    // raw dosya boyutu: en buyuk rawOff+rawSize (basliklar dahil)
+    u32 end = pe->SizeOfHeaders();
+    for (const PESection& s : pe->Sections())
+        end = std::max<u32>(end, s.rawOff + s.rawSize);
+    if (end == 0 || end > (u32)Data.size() * 2 + (1u << 20)) return false; // imkansiz tablo
+
+    raw.assign(end, 0);
+
+    // basliklar: mapped imajin ilk SizeOfHeaders bayti aynen yerlesir
+    const u32 hdrBytes = std::min<u32>(pe->SizeOfHeaders(), (u32)Data.size());
+    memcpy(raw.data(), Data.data(), hdrBytes);
+
+    // section'lar: mapped[va .. va+copy] -> raw[rawOff .. rawOff+copy]
+    for (const PESection& s : pe->Sections()) {
+        const u32 copy = std::min<u32>(s.rawSize, s.vs ? s.vs : s.rawSize);
+        if (copy == 0) continue;
+        if (s.va + copy > Data.size() || s.rawOff + copy > raw.size()) continue;
+        memcpy(raw.data() + s.rawOff, Data.data() + s.va, copy);
+    }
+    return true;
+}
+
 bool ModuleImage::LoadFromReader(IMemoryReader& r, const ModuleInfo& m) {
     if (!m.base || !m.size) {
         Log::Err("invalid module info (base/size zero)");

@@ -67,7 +67,8 @@ export interface DpMeta {
   ueVersion: string | null;
   moduleName: string | null;
   moduleBase: string | null;
-  status: "full" | "names-only";
+  // "il2cpp": canlı IL2CPP hattı (serve modu, target GameAssembly.dll)
+  status: "full" | "names-only" | "il2cpp";
   generated: string | null; // result.generated (insan okur damga)
 }
 
@@ -295,7 +296,8 @@ export function parseResultJson(
     if (modBase) out.moduleBase = asHex(modBase);
   }
   const status = asStr(root.status);
-  if (status === "full" || status === "names-only") out.status = status;
+  // "il2cpp": canlı IL2CPP dump hattı (serve modu) da kabul edilir
+  if (status === "full" || status === "names-only" || status === "il2cpp") out.status = status;
   const counts = root.counts;
   if (counts && typeof counts === "object") {
     const c = counts as Record<string, unknown>;
@@ -524,7 +526,7 @@ export function parseDumperProFiles(files: DpSourceFile[]): DpParsedImport {
   const functions: DpFunction[] = [];
   const fnSeen = new Set<string>();
   const sources: string[] = [];
-  let manifestStatus: "full" | "names-only" | undefined;
+  let manifestStatus: "full" | "names-only" | "il2cpp" | undefined;
   let artifacts: string[] = [];
 
   for (const file of files) {

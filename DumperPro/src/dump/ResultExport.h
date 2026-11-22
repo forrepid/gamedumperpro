@@ -12,7 +12,7 @@
 
 namespace dumper {
 
-constexpr const char* kDumperProVersion = "0.5.0";
+constexpr const char* kDumperProVersion = "0.5.2";
 
 // Tek UFunction kaydi (UEContext'siz durabilen duz veri; unit-test edilebilir)
 struct FuncJsonParam {

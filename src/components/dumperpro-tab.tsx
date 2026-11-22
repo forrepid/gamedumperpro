@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -22,6 +23,7 @@ import {
   Play,
   RefreshCw,
   Search,
+  Terminal,
   Trash2,
   Upload,
   Wand2,
@@ -37,6 +39,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -195,6 +202,8 @@ function fmtDate(iso: string): string {
 
 function statusBadgeClass(status: string): string {
   if (status === "names-only") return "border-amber-500/40 bg-amber-500/10 text-amber-300";
+  // "il2cpp": canlı IL2CPP hattı (serve modu) için teal rozet
+  if (status === "il2cpp") return "border-teal-500/40 bg-teal-500/10 text-teal-300";
   return "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
 }
 
@@ -235,6 +244,148 @@ function buildFunctionEntry(f: DpFunction): FunctionEntry {
     xrefsIn: 0,
     structHint: f.params.find((p) => p.target)?.target,
   };
+}
+
+// ---------------------------------------------------------------------------
+// canlı hedef rehberi (DumperPro.exe 0.5.2+ yeni modları)
+// ---------------------------------------------------------------------------
+
+interface GuideStep {
+  /** kopyalanabilir ana CLI komutu (bu adımda komut yoksa null) */
+  cmd: string | null;
+  /** adım açıklaması */
+  desc: string;
+  /** opsiyonel ikinci komut (örn. Unity varyantı) */
+  extra?: string;
+}
+
+/** Rehber adımları: canlı process seçimi, serve modu ve klasik akış. */
+const GUIDE_STEPS: GuideStep[] = [
+  {
+    cmd: "DumperPro.exe --list-processes",
+    desc: "Çalışan process'leri PID, modül sayısı ve motor ipuçlarıyla listeler (UE 5.1 / Unity IL2CPP). --deep UE sürümünü bellekten doğrular; --json eklerseniz processes.json dosyasına yazar.",
+  },
+  {
+    cmd: "DumperPro.exe --serve",
+    desc: "Tarayıcıda http://127.0.0.1:8420 'Canlı Hedefler' bölümünü açar: listeden process seçip tek tıkla dump alın (POST /api/dump). Çıktılar DumperPro_Out/serve/ altına yazılır.",
+  },
+  {
+    cmd: "DumperPro.exe --process Game.exe --json",
+    desc: "Klasik akış. Unity (IL2CPP) oyunu için modül ve metadata belirtin:",
+    extra:
+      "DumperPro.exe --process Game.exe --module GameAssembly.dll --metadata global-metadata.dat",
+  },
+  {
+    cmd: null,
+    desc: "Çıkan result.json + functions.json (veya tüm klasörün ZIP'i) bu sekmeye import edilir; kayıt process / kernel mod rozetleriyle listelenir. Canlı IL2CPP hattında durum 'il2cpp' görünür.",
+  },
+];
+
+/** Rehber içindeki tek kopyalanabilir komut satırı. */
+function GuideCmdRow({
+  cmd,
+  copyKey,
+  accent = false,
+  copied,
+  onCopy,
+}: {
+  cmd: string;
+  copyKey: string;
+  accent?: boolean;
+  copied: boolean;
+  onCopy: (cmd: string, key: string) => void;
+}) {
+  return (
+    <div className="flex items-start gap-1.5">
+      <code
+        className={`min-w-0 flex-1 whitespace-pre-wrap break-words rounded-md border border-zinc-800 bg-zinc-900/80 px-2 py-1 font-mono text-[11px] leading-relaxed ${
+          accent ? "text-teal-300" : "text-zinc-300"
+        }`}
+      >
+        {cmd}
+      </code>
+      <button
+        type="button"
+        aria-label={`${cmd} komutunu kopyala`}
+        className="shrink-0 rounded-md border border-zinc-800 bg-zinc-900/60 p-1.5 text-zinc-500 transition hover:border-zinc-600 hover:text-zinc-200"
+        onClick={() => onCopy(cmd, copyKey)}
+      >
+        {copied ? (
+          <Check className="h-3 w-3 text-teal-400" aria-hidden="true" />
+        ) : (
+          <Copy className="h-3 w-3" aria-hidden="true" />
+        )}
+      </button>
+    </div>
+  );
+}
+
+/** Import alanının üstündeki katlanabilir "Canlı Hedef Rehberi" bölümü. */
+function LiveTargetGuide() {
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  const copyCmd = useCallback(async (cmd: string, key: string) => {
+    try {
+      await navigator.clipboard.writeText(cmd);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey((cur) => (cur === key ? null : cur)), 1500);
+    } catch {
+      // pano erişimi yoksa sessiz geç (komut zaten ekranda görünür)
+    }
+  }, []);
+
+  return (
+    <Collapsible className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/50">
+      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-3 py-2.5 text-left transition hover:bg-zinc-900/60">
+        <Terminal className="h-4 w-4 shrink-0 text-teal-400" aria-hidden="true" />
+        <span className="text-xs font-medium text-zinc-100">
+          Canlı Hedef Rehberi{" "}
+          <span className="font-normal text-zinc-500">(DumperPro.exe 0.5.2+)</span>
+        </span>
+        <ChevronDown
+          className="ml-auto h-3.5 w-3.5 shrink-0 text-zinc-500 transition-transform group-data-[state=open]:rotate-180"
+          aria-hidden="true"
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="space-y-3 border-t border-zinc-800 px-3 pb-3 pt-2.5">
+          <p className="text-[11px] leading-relaxed text-zinc-400">
+            Canlı bir oyun process&apos;inden veri çıkarmak için Windows makinenizde
+            DumperPro.exe çalıştırın:
+          </p>
+          <ol className="space-y-3">
+            {GUIDE_STEPS.map((s, i) => (
+              <li key={s.cmd ?? `adim-${i}`} className="flex gap-2.5">
+                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-teal-500/40 bg-teal-500/10 font-mono text-[10px] text-teal-300">
+                  {i + 1}
+                </span>
+                <div className="min-w-0 flex-1 space-y-1.5">
+                  {s.cmd && (
+                    <GuideCmdRow
+                      cmd={s.cmd}
+                      copyKey={String(i)}
+                      accent
+                      copied={copiedKey === String(i)}
+                      onCopy={(cmd, key) => void copyCmd(cmd, key)}
+                    />
+                  )}
+                  <p className="text-[11px] leading-relaxed text-zinc-400">{s.desc}</p>
+                  {s.extra && (
+                    <GuideCmdRow
+                      cmd={s.extra}
+                      copyKey={`${i}-ek`}
+                      copied={copiedKey === `${i}-ek`}
+                      onCopy={(cmd, key) => void copyCmd(cmd, key)}
+                    />
+                  )}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -525,7 +676,7 @@ export default function DumperProTab() {
         const c = d.counts ?? { names: 0, objects: 0, functions: 0 };
         toast({
           title: "Ice aktarma tamamlandi",
-          description: `${c.names.toLocaleString("tr-TR")} isim · ${c.objects.toLocaleString("tr-TR")} nesne · ${c.functions.toLocaleString("tr-TR")} fonksiyon (${d.status === "names-only" ? "names-only" : "full"})`,
+          description: `${c.names.toLocaleString("tr-TR")} isim · ${c.objects.toLocaleString("tr-TR")} nesne · ${c.functions.toLocaleString("tr-TR")} fonksiyon (${d.status === "il2cpp" ? "il2cpp" : d.status === "names-only" ? "names-only" : "full"})`,
         });
         setFiles([]);
         await loadImports();
@@ -648,6 +799,9 @@ export default function DumperProTab() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          {/* canlı hedef rehberi: dropzone'un hemen üstünde katlanabilir bölüm */}
+          <LiveTargetGuide />
+
           <div
             role="button"
             tabIndex={0}

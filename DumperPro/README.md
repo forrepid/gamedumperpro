@@ -218,6 +218,8 @@ Notes:
 ```
 DumperPro.exe --process Game.exe            attach to a running process (name substring match)
 DumperPro.exe --pid 1234                    attach by pid
+DumperPro.exe --list-processes              list running processes with engine hints (0.5.2+)
+DumperPro.exe --list-processes --deep       verify UE version from live memory (0.5.2+)
 DumperPro.exe --file Game-Shipping.exe      offline analysis of a PE file (.exe/.dll, x64)
 DumperPro.exe --file global-metadata.dat    Unity IL2CPP metadata dump (v16..31)
 DumperPro.exe --file oyun.apk               static analysis: APK/ZIP/ELF/DEX/IL2CPP
@@ -237,6 +239,11 @@ DumperPro.exe --process Game.exe --module Game-Win64-Shipping.exe --out C:\dumps
 :: pid mode with kernel-assisted reads and a larger probe sample
 DumperPro.exe --pid 1234 --kernel --probe 800
 
+:: live process discovery (0.5.2+): which running process is UE / Unity IL2CPP?
+DumperPro.exe --list-processes
+DumperPro.exe --list-processes --deep            :: confirm UE x.y from the target's memory image
+DumperPro.exe --list-processes --json            :: machine-readable DumperPro_Out/processes.json
+
 :: names/objects/offsets only (skip SDK generation)
 DumperPro.exe --file Game-Win64-Shipping.exe --no-sdk
 
@@ -249,6 +256,12 @@ DumperPro.exe --list-profiles
 :: IL2CPP: full metadata + binary matching (method addresses, real types)
 DumperPro.exe --file GameAssembly.dll --metadata global-metadata.dat
 DumperPro.exe --file libil2cpp.so  --metadata global-metadata.dat
+
+:: IL2CPP LIVE (0.5.2+): read the mapped GameAssembly.dll from the running
+:: process (works even when the on-disk binary is packed/encrypted), convert
+:: it back to raw PE layout and run the full metadata matching pipeline
+DumperPro.exe --process Game.exe --metadata global-metadata.dat
+DumperPro.exe --pid 1234 --module GameAssembly.dll --metadata global-metadata.dat --json
 
 :: hex/aob: view, search, patch + save a patched copy
 DumperPro.exe --hex --file Game.exe --hex-view 0x1000 --hex-code 0x140001000:24
@@ -272,13 +285,15 @@ DumperPro.exe --hex --process Game.exe --hex-patch "0x140001000=90" --hex-live
 |---|---|---|
 | `--process <name>` | attach to a process (case-insensitive substring of the image name) | - |
 | `--pid <n>` | attach by process id | - |
+| `--list-processes` | list running processes with engine hints (UE / Unity IL2CPP / Unity Mono) and exit; cannot be combined with a target | - |
+| `--deep` | with `--list-processes`: read candidate main modules (up to 32 MB) and confirm the UE version string from live memory | off |
 | `--file <path>` | analyze an on-disk x64 PE image instead of a live process; non-PE inputs (apk/zip/so/dex/metadata/vdex/oat) go to the static analysis pipeline | - |
 | `--module <name>` | scan this module instead of the main module | main module |
 | `--out <dir>` | output directory | `./DumperPro_Out/<game>_<timestamp>` |
 | `--ini <games.ini>` | config file | `./games.ini` |
 | `--kernel` | kernel-assisted memory access (see `docs/KERNEL.md`) | off |
 | `--serve [port]` | local HTTP upload mode (drag & drop analysis) | port 8420 |
-| `--metadata <file>` | pair with `--file`: Unity IL2CPP `global-metadata.dat` for binary matching | - |
+| `--metadata <file>` | pair with `--file` (offline) or `--process`/`--pid` (live, 0.5.2+): Unity IL2CPP `global-metadata.dat` for binary matching | - |
 | `--json` | machine-readable JSON outputs (`names.json`, `objects.json`, `analysis_report.json`) | off |
 | `--hex` | hex/AOB view-editor-save mode (requires one of the `--hex-*` actions) | off |
 | `--hex-view <off[:rows]>` | hex+ASCII table | - |

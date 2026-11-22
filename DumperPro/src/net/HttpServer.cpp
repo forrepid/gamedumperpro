@@ -18,6 +18,7 @@
 #include "net/HttpServer.h"
 #include "file/StaticAnalyzer.h"
 #include "il2cpp/Il2CppDummyDll.h"
+#include "core/MemoryReader.h"   // ListLiveProcesses (canli hedefler, 0.5.2)
 #include "utils/StrUtil.h"
 
 #include <cstring>
@@ -30,6 +31,7 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#include <windows.h>            // GetModuleFileNameW + CreateProcessA (self-spawn dump)
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
@@ -112,6 +114,146 @@ bool SendAll(SocketT s, const char* data, size_t len) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Canli hedefler (0.5.2): JSON yardimcilari + self-spawn dump
+// ---------------------------------------------------------------------------
+
+std::string JsonEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if ((u8)c < 0x20) {
+                    char b[8];
+                    snprintf(b, sizeof(b), "\\u%04X", (unsigned)(u8)c);
+                    out += b;
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out;
+}
+
+// minimal JSON govde alanlarini cikarar (tek seviye; govde kendi urettigimiz
+// sayfa JS'inden geliyor, tum JSON parser gerekmez)
+long ExtractJsonNumber(const std::string& body, const char* key) {
+    const std::string pat = "\"" + std::string(key) + "\"";
+    const size_t k = body.find(pat);
+    if (k == std::string::npos) return 0;
+    const size_t colon = body.find(':', k + pat.size());
+    if (colon == std::string::npos) return 0;
+    return strtol(body.c_str() + colon + 1, nullptr, 10);
+}
+
+bool ExtractJsonBool(const std::string& body, const char* key) {
+    const std::string pat = "\"" + std::string(key) + "\"";
+    const size_t k = body.find(pat);
+    if (k == std::string::npos) return false;
+    const size_t colon = body.find(':', k + pat.size());
+    if (colon == std::string::npos) return false;
+    const std::string rest = str::Lower(str::Trim(body.substr(colon + 1, 8)));
+    return rest.rfind("true", 0) == 0;
+}
+
+std::string ExtractJsonString(const std::string& body, const char* key) {
+    const std::string pat = "\"" + std::string(key) + "\"";
+    const size_t k = body.find(pat);
+    if (k == std::string::npos) return {};
+    // pat" zaten kapanis tirnagini icerir; ilk tirnak degerin acilisi
+    const size_t q1 = body.find('"', k + pat.size());
+    if (q1 == std::string::npos) return {};
+    // escape'li degeri tara
+    std::string out;
+    for (size_t i = q1 + 1; i < body.size(); i++) {
+        char c = body[i];
+        if (c == '\\' && i + 1 < body.size()) {
+            const char n = body[i + 1];
+            switch (n) {
+                case '"':  out += '"';  break;
+                case '\\': out += '\\'; break;
+                case '/':  out += '/';  break;
+                case 'n':  out += '\n'; break;
+                case 't':  out += '\t'; break;
+                case 'r':  out += '\r'; break;
+                default:   out += '\\'; out += n; break;
+            }
+            i++;
+            continue;
+        }
+        if (c == '"') break;
+        out += c;
+    }
+    return out;
+}
+
+#ifdef _WIN32
+// kendi kendini yeniden baslatan dump: komut satirini yurut, stdout/stderr'i
+// yakala, timeout'u asarsa oldur. Windows-only (canli proses erisimi Win32 API).
+bool SpawnSelfCapture(const std::string& cmdLine, std::string& outLog, DWORD timeoutMs, DWORD& exitCode) {
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE rd = nullptr, wr = nullptr;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) return false;
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0); // okuma ucu cocuga kalmasin
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    si.hStdOutput = wr;
+    si.hStdError = wr;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION pi{};
+
+    // CreateProcessA komut satirini DEGISTIREBILIR - mutable kopya sart
+    std::vector<char> mutableCmd(cmdLine.begin(), cmdLine.end());
+    mutableCmd.push_back('\0');
+
+    const BOOL ok = CreateProcessA(nullptr, mutableCmd.data(), nullptr, nullptr, TRUE,
+                                   CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    CloseHandle(wr);
+    if (!ok) {
+        CloseHandle(rd);
+        return false;
+    }
+
+    constexpr size_t kLogCap = 256 * 1024;
+    DWORD elapsed = 0;
+    for (;;) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr)) break;
+        if (avail) {
+            char buf[4096];
+            DWORD n = 0;
+            if (ReadFile(rd, buf, sizeof(buf), &n, nullptr) && n) {
+                if (outLog.size() < kLogCap) outLog.append(buf, (size_t)std::min<DWORD>(n, 4096));
+                continue;
+            }
+        }
+        if (WaitForSingleObject(pi.hProcess, 200) == WAIT_OBJECT_0) break;
+        elapsed += 200;
+        if (elapsed >= timeoutMs) {
+            TerminateProcess(pi.hProcess, (UINT)1);
+            outLog += "\n[timeout] dump 10 dakikayi asti - process olduruldu";
+            break;
+        }
+    }
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    CloseHandle(rd);
+    return true;
+}
+#endif
+
 void SendResponse(SocketT s, const std::string& status, const std::string& contentType,
                   const std::string& body) {
     char head[512];
@@ -150,6 +292,21 @@ input[type=file]{display:none}
 #bar>div{height:100%;width:0;background:#34d399;transition:width .2s}
 #st{font-size:13px;color:#9ca3af;margin-bottom:10px;min-height:18px}
 pre{background:#0a0f0d;border:1px solid #1f2937;border-radius:10px;padding:16px;font-size:12px;line-height:1.55;white-space:pre-wrap;word-break:break-word;color:#a7f3d0;display:none;max-height:70vh;overflow:auto}
+section#live{margin-top:30px;border-top:1px solid #1f2937;padding-top:20px}
+section#live h2{font-size:15px;color:#34d399;margin:0 0 4px}
+p.livesub{margin:0 0 12px;color:#6b7280;font-size:12px}
+.liverow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+button{background:#0f2018;border:1px solid #1f4037;color:#34d399;font-family:inherit;font-size:12px;padding:7px 14px;border-radius:8px;cursor:pointer}
+button:hover{background:#14342a}
+button:disabled{opacity:.5;cursor:wait}
+#pinfo{font-size:11px;color:#6b7280}
+#pwrap{max-height:340px;overflow:auto;border:1px solid #1f2937;border-radius:10px;background:#0d1512}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{color:#6b7280;text-align:left;padding:6px 10px;border-bottom:1px solid #1f2937;font-weight:500;position:sticky;top:0;background:#0d1512}
+td{padding:5px 10px;border-bottom:1px solid #141c19;color:#d4d4d8;white-space:nowrap}
+tr.hint td{color:#a7f3d0}
+td button.dump{padding:3px 12px;font-size:11px}
+#pst{font-size:12px;color:#9ca3af;margin:10px 0;min-height:16px}
 footer{border-top:1px solid #1f2937;padding:12px 24px;color:#4b5563;font-size:11px;text-align:center}
 </style>
 </head>
@@ -167,6 +324,23 @@ footer{border-top:1px solid #1f2937;padding:12px 24px;color:#4b5563;font-size:11
   <div id="bar"><div></div></div>
   <div id="st"></div>
   <pre id="out"></pre>
+  <section id="live">
+    <h2>Canli Hedefler</h2>
+    <p class="livesub">calisan prosesleri listele - motor ipucu sutununda UE / Unity IL2CPP / Unity Mono gorunur; Dump butonu canli proses uzerinde GNames + GObjects + SDK cikarir (ayni UE hatti, --pid ile yeniden baslatim)</p>
+    <div class="liverow">
+      <button id="prefresh">Listeyi Yenile</button>
+      <button id="pdeep">Derin Tara (UE surumu)</button>
+      <span id="pinfo"></span>
+    </div>
+    <div id="pwrap">
+      <table id="ptab">
+        <thead><tr><th>PID</th><th>Ad</th><th>Modul</th><th>Motor</th><th>Detay</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="pst"></div>
+    <pre id="pout"></pre>
+  </section>
 </main>
 <footer>yalnizca yerel analiz - raporlar DumperPro_Out/serve/ altina kaydedilir</footer>
 <script>
@@ -194,6 +368,52 @@ async function upload(file){
   }catch(err){st.textContent='Hata: '+err;}
   setTimeout(()=>{bar.style.display='none';fill.style.width='0%';},600);
 }
+const ptab=document.querySelector('#ptab tbody'),pinfo=document.getElementById('pinfo'),
+      pst=document.getElementById('pst'),pout=document.getElementById('pout');
+async function refreshProcs(deep){
+  pst.textContent=deep?'Derin tarama... (UE surum dizesi her aday prosesin bellek imajindan okunuyor - 10-30 sn)':'Liste aliniyor...';
+  document.getElementById('prefresh').disabled=true;document.getElementById('pdeep').disabled=true;
+  try{
+    const r=await fetch('/api/processes'+(deep?'?deep=1':''));
+    const j=await r.json();
+    ptab.innerHTML='';
+    let hinted=0;
+    (j.processes||[]).forEach(p=>{
+      if(p.hint)hinted++;
+      const tr=document.createElement('tr');if(p.hint)tr.className='hint';
+      const td=t=>{const d=document.createElement('td');d.textContent=t==null?'':String(t);return d};
+      tr.appendChild(td(p.pid));tr.appendChild(td(p.name));tr.appendChild(td(p.modules??0));
+      tr.appendChild(td(p.hint||'-'));
+      tr.appendChild(td((p.detail||'')+(p.attachable?'':' [korumali]')));
+      const act=document.createElement('td');const b=document.createElement('button');
+      b.className='dump';b.textContent='Dump';b.disabled=!p.attachable;
+      b.onclick=()=>dumpPid(p.pid,p.name,b);act.appendChild(b);tr.appendChild(act);
+      ptab.appendChild(tr);
+    });
+    pinfo.textContent=j.count+' proses ('+hinted+' motor ipucli)'+(deep?' [deep]':'');
+    pst.textContent='';
+  }catch(err){pst.textContent='Hata: '+err;}
+  document.getElementById('prefresh').disabled=false;document.getElementById('pdeep').disabled=false;
+}
+async function dumpPid(pid,name,btn){
+  btn.disabled=true;
+  pst.textContent='Canli dump aliniyor: '+name+' (pid '+pid+') - 1-2 dakika surebilir, sayfayi kapatmayin...';
+  pout.style.display='none';pout.textContent='';
+  try{
+    const r=await fetch('/api/dump',{method:'POST',headers:{'Content-Type':'application/json'},
+                                     body:JSON.stringify({pid:pid})});
+    const j=await r.json();
+    if(j.ok)pst.textContent='TAMAMLANDI -> '+j.outDir;
+    else pst.textContent='DUMP BASARISIZ (exit '+(j.exitCode!=null?j.exitCode:'?')+'): '+(j.error||'ayrinti icin loga bakin');
+    let txt='DumperPro dump logu (pid '+pid+'):\n'+(j.log||'(log bos)');
+    if(j.result)txt+='\n\nresult.json:\n'+JSON.stringify(j.result,null,2);
+    pout.textContent=txt;pout.style.display='block';
+  }catch(err){pst.textContent='Hata: '+err;}
+  btn.disabled=false;
+}
+document.getElementById('prefresh').onclick=()=>refreshProcs(false);
+document.getElementById('pdeep').onclick=()=>refreshProcs(true);
+window.addEventListener('load',()=>refreshProcs(false));
 </script>
 </body>
 </html>)HTML";
@@ -311,11 +531,15 @@ void HttpServer::HandleClient(u64 sock) {
     const size_t sp = reqLine.find(' ');
     const std::string method = sp == std::string::npos ? "" : reqLine.substr(0, sp);
     std::string path = "";
+    std::string query = "";
     if (sp != std::string::npos) {
         const size_t sp2 = reqLine.find(' ', sp + 1);
         path = reqLine.substr(sp + 1, sp2 == std::string::npos ? std::string::npos : sp2 - sp - 1);
         const size_t q = path.find('?');
-        if (q != std::string::npos) path = path.substr(0, q);
+        if (q != std::string::npos) {
+            query = path.substr(q + 1);
+            path = path.substr(0, q);
+        }
     }
 
     std::map<std::string, std::string> hdrs;
@@ -363,6 +587,12 @@ void HttpServer::HandleClient(u64 sock) {
         SendHtml(s, kUploadPage);
     } else if (method == "GET" && path == "/health") {
         SendResponse(s, "200 OK", "text/plain; charset=utf-8", "ok");
+    } else if (method == "GET" && path == "/api/processes") {
+        // canli proses listesi; ?deep=1 ile UE surum dizesi bellekte dogrulanir
+        HandleProcesses((u64)(intptr_t)s, query.find("deep=1") != std::string::npos);
+    } else if (method == "POST" && path == "/api/dump") {
+        // canli dump tetikleme: {"pid":N,"module":"...","noSdk":bool,"metadata":"..."}
+        HandleDump((u64)(intptr_t)s, body);
     } else if (method == "POST" && (path == "/upload" || path == "/raw")) {
         std::string ct;
         auto it = hdrs.find("content-type");
@@ -497,6 +727,116 @@ std::string HttpServer::HandleUpload(const std::vector<u8>& body, const std::str
     html += "<header><h1>" + escName + "</h1><a href=\"/\">Yeni yukleme</a></header>";
     html += "<pre>" + escReport + "</pre></body></html>";
     return html;
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/processes[?deep=1] - canli proses listesi (motor ipuclari + JSON)
+// ---------------------------------------------------------------------------
+void HttpServer::HandleProcesses(u64 sock, bool deep) {
+    SocketT s = (SocketT)(intptr_t)sock;
+    const std::vector<ProcessListEntry> procs = ListLiveProcesses(deep);
+
+    std::string js;
+    js.reserve(256 + procs.size() * 96);
+    js += "{\"format\":\"dumperpro-processes\",\"version\":1,\"deep\":";
+    js += (deep ? "true" : "false");
+    js += ",\"count\":";
+    js += std::to_string(procs.size());
+    js += ",\"processes\":[";
+    for (size_t i = 0; i < procs.size(); i++) {
+        const ProcessListEntry& e = procs[i];
+        js += i ? ",\n{" : "\n{";
+        js += "\"pid\":" + std::to_string(e.pid);
+        js += ",\"name\":\"" + JsonEscape(e.name) + "\"";
+        js += ",\"modules\":" + std::to_string(e.moduleCount);
+        js += ",\"hint\":\"" + JsonEscape(e.hint) + "\"";
+        js += ",\"detail\":\"" + JsonEscape(e.hintDetail) + "\"";
+        js += e.attachable ? ",\"attachable\":true" : ",\"attachable\":false";
+        js += e.deep ? ",\"deep\":true}" : ",\"deep\":false}";
+    }
+    js += "\n]}";
+    SendResponse(s, "200 OK", "application/json; charset=utf-8", js);
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/dump - canli dump tetikleme (0.5.2)
+// Govde: {"pid":N, "module":"...", "noSdk":bool, "metadata":"..."}
+// DumperPro.exe kendini --pid ile subprocess olarak yeniden baslatir (self-
+// spawn); UE hattinin TAMAMI (GNames/GObjects/SDK/result.json) ayni kod yoluyla
+// kosar. Sonuc: exit code + stdout logu + result.json icerigi.
+// ---------------------------------------------------------------------------
+void HttpServer::HandleDump(u64 sock, const std::vector<u8>& body) {
+    SocketT s = (SocketT)(intptr_t)sock;
+#ifndef _WIN32
+    (void)body;
+    SendResponse(s, "400 Bad Request", "application/json; charset=utf-8",
+                 "{\"ok\":false,\"error\":\"canli proses dump yalnizca Windows yapida desteklenir (--pid Win32 API)\"}");
+#else
+    const std::string bodyStr(reinterpret_cast<const char*>(body.data()), body.size());
+    const long pid = ExtractJsonNumber(bodyStr, "pid");
+    if (pid <= 0) {
+        SendResponse(s, "400 Bad Request", "application/json; charset=utf-8",
+                     "{\"ok\":false,\"error\":\"pid eksik veya gecersiz\"}");
+        return;
+    }
+    const std::string module   = ExtractJsonString(bodyStr, "module");
+    const std::string metadata = ExtractJsonString(bodyStr, "metadata");
+    const bool noSdk = ExtractJsonBool(bodyStr, "noSdk");
+    if (module.find('"') != std::string::npos || metadata.find('"') != std::string::npos) {
+        SendResponse(s, "400 Bad Request", "application/json; charset=utf-8",
+                     "{\"ok\":false,\"error\":\"module/metadata alaninda tirnak olamaz\"}");
+        return;
+    }
+
+    // kendi exe yolu + cikti klasoru: DumperPro_Out/serve/live_<stamp>_pid<N>
+    wchar_t exePathW[1024] = {};
+    GetModuleFileNameW(nullptr, exePathW, 1024);
+    const fs::path exePath(exePathW);
+
+    const std::string pidStr = std::to_string(pid);
+    std::time_t t = std::time(nullptr);
+    std::tm tmv;
+    localtime_s(&tmv, &t);
+    char stamp[32];
+    strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tmv);
+    const fs::path outDir = outDir_ / (std::string("live_") + stamp + "_pid" + pidStr);
+    std::error_code ec;
+    fs::create_directories(outDir, ec);
+
+    // komut satiri: ayni UE hatti --json ile (result.json + functions.json her zaman)
+    std::string cmd = "\"" + exePath.string() + "\" --pid " + pidStr +
+                      " --json --out \"" + outDir.string() + "\"";
+    if (!module.empty())   cmd += " --module \"" + module + "\"";
+    if (noSdk)             cmd += " --no-sdk";
+    if (!metadata.empty()) cmd += " --metadata \"" + metadata + "\"";
+
+    std::string log;
+    DWORD exitCode = (DWORD)-1;
+    const bool spawned = SpawnSelfCapture(cmd, log, 600000, exitCode); // 10 dk tavan
+
+    // result.json oku (varsa yanita gom)
+    std::string resultJson;
+    {
+        std::ifstream rf(outDir / "result.json", std::ios::binary);
+        if (rf.good()) {
+            std::stringstream ss;
+            ss << rf.rdbuf();
+            resultJson = ss.str();
+        }
+    }
+
+    std::string js = "{\"ok\":";
+    js += (spawned && exitCode == 0) ? "true" : "false";
+    js += spawned ? ",\"exitCode\":" + std::to_string((unsigned long)exitCode)
+                  : ",\"error\":\"process olusturulamadi (CreateProcessA)\"";
+    js += ",\"outDir\":\"" + JsonEscape(outDir.string()) + "\"";
+    js += ",\"cmd\":\"" + JsonEscape(cmd) + "\"";
+    js += ",\"result\":";
+    js += resultJson.empty() ? "null" : resultJson;
+    js += ",\"log\":\"" + JsonEscape(log) + "\"";
+    js += "}";
+    SendResponse(s, "200 OK", "application/json; charset=utf-8", js);
+#endif
 }
 
 } // namespace dumper

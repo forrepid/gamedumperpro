@@ -12,6 +12,14 @@
 //     * minimal HTTP/1.0-1.1 istek cozumleme (GET / POST)
 //     * multipart/form-data dosya yukleme (RFC 7578) + raw octet-stream
 // - Analiz StaticAnalyzer ile yapilir (PE/ELF/DEX/ZIP-APK).
+// - Canli hedefler (0.5.2):
+//     GET  /api/processes         -> calisan prosesler + motor ipuclari (JSON)
+//     GET  /api/processes?deep=1  -> UE surumunu bellekten dogrula
+//     POST /api/dump              -> {"pid":N,"module":"...","noSdk":bool,
+//                                   "metadata":"..."} -> DumperPro.exe kendini
+//                                   --pid ile yeniden baslatir (self-spawn),
+//                                   UE/IL2CPP dump hattini kosar ve result.json
+//                                   (artifacts ile) JSON olarak doner.
 // - Rapor DumperPro_Out/serve/ altina kaydedilir.
 //
 // Guvenlik notlari:
@@ -37,6 +45,8 @@ private:
     void HandleClient(u64 socket);
     std::string HandleUpload(const std::vector<u8>& body, const std::string& contentType,
                              const std::string& fileName, size_t bodyOffset, size_t bodyLen);
+    void HandleProcesses(u64 socket, bool deep);            // GET /api/processes
+    void HandleDump(u64 socket, const std::vector<u8>& body); // POST /api/dump
 
     u16 port_;
     fs::path outDir_;

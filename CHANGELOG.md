@@ -4,6 +4,61 @@ Format: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) — semantik s�
 
 ## [0.5.2] — 2026-11-21
 
+### Eklendi — Canlı proses seçimi + canlı oyun verisi çıkarma (motor + serve + web)
+
+**Neden:** canlı attach zaten çalışıyordu (`--process/--pid`) ama kullanıcı çalışan
+prosesleri keşfedemez, hangi prosesin UE/Unity oyunu olduğunu bilemezdi; serve modu
+yalnızca dosya yükleme yapar, canlı hedef seçimi ve tek tık dump yoktu; IL2CPP hattı
+yalnızca diskteki dosyalarla çalışır (paketli/şifreli GameAssembly.dll tek dosyada
+okunamayan oyunlarda kullanılamazdı).
+
+**CLI (`--list-processes [--deep]` — `core/ProcessReader.cpp` `ListLiveProcesses`):**
+- Toolhelp snapshot + proses başına modül snapshot'ı: pid, ad, modül sayısı, attachable
+  durumu (`OpenProcess(READ)` testi, korumalı hedefler `[korumali]` etiketli)
+- **Hızlı motor ipuçları** (modül/imaj adı heuristikleri, kesinlik sırasıyla):
+  `GameAssembly.dll` → **Unity IL2CPP**, `unityplayer.dll` + `mono-*` → **Unity Mono**,
+  `unityplayer.dll` → Unity, `UE4Editor/UE5Editor` → **UE Editor**, `UE4.dll/UE5.dll` → UE,
+  `*-Win64-Shipping.exe / *-Client.exe / ...` → **UE Game?**
+- `--deep`: aday proseslerde ana modül imajı **kademeli 1 MB'lik parçalarla** (tavan 32 MB,
+  4 MB'tan küçük exe'ler atlanır, kesin ipucu verilenler hariç) okunur ve
+  `++UE4/5+Release-x.y.z` dizesi **bellekte doğrulanır** → "UE 5.1" ipucu
+- Tablo çıktısı (ipuçlu prosesler önce) + `--json` ile `DumperPro_Out/processes.json`
+  (`{"format":"dumperpro-processes","version":1,...}`)
+- Doğrulama: `--list-processes` diğer hedeflerle birleştirilemez, `--deep` yalnız
+  `--list-processes` ile geçerli
+
+**Canlı IL2CPP hattı (`--process/--pid + --metadata` — `main.cpp` `RunIl2CppLiveMode`):**
+- IL2CPP modülü (`--module` veya otomatik: `gameassembly`/`libil2cpp`/`il2cpp`) prosesin
+  **bellekte mapped imajı** olarak okunur
+- Yeni `ModuleImage::UnmapToRawFile`: mapped (RVA==offset) imaj, PE section tablosuyla
+  **RAW PE dosya düzenine** geri açılır — `Il2CppBinaryMatch::Match` dosya layout'u bekler
+- Metadata + binary eşleştirme + DummyDll + rapor: Il2CppDumper hattının tam yeniden
+  kullanımı; çıktı klasörü `<oyun>_il2cpp_live_<zaman>/`, `result.json` **status=il2cpp**
+- `--json` ile ham PE imajı da diske yazılır (offline yeniden koşum için)
+
+**Serve modu (`--serve` — `net/HttpServer.cpp`):**
+- `GET /api/processes[?deep=1]` → canlı proses listesi (aynı JSON şema)
+- `POST /api/dump` `{"pid":N,"module":"...","noSdk":bool,"metadata":"..."}` → **self-spawn**:
+  DumperPro.exe kendini `--pid N --json --out DumperPro_Out/serve/live_<zaman>_pid<N>` ile
+  subprocess olarak yeniden başlatır (CreateProcessA + pipe, 10 dk timeout, stdout/stderr
+  yakalama) — UE hattının tamamı tek tıkla çalışır, yanıt `exitCode + log + result.json`
+  gömülü döner; Windows dışında zarif 400
+- Gömülü sayfada **"Canlı Hedefler"** bölümü: liste (ipuçlu satırlar vurgulu) + "Derin Tara
+  (UE sürümü)" + satır başına **Dump** butonu + dump logu ve result.json görüntüleyici
+- Arayüz sayfası ilk açılışta listeyi otomatik çeker; 127.0.0.1 bağlaması değişmedi
+
+**Web platformu (`dumperpro-tab` + `parse.ts`):**
+- Import sekmesine **"Canlı Hedef Rehberi"** (kopyalanabilir 4 adımlı akış: listele →
+  serve ile tek tık → klasik attach → result.json import)
+- `result.json` status şemasına **`il2cpp`** kabulü + teal rozet; mode=process/kernel
+  rozetleriyle canlı dump'lar web'e taşınır
+
+**Doğrulama:** Linux g++ -std=c++20 ile tüm kaynaklar derlenip linklendi (Win32 yolları
+stub; serve endpoint'leri curl ile doğrulandı: processes JSON şeması, deep parametresi,
+dump 400 zarif hata, /health, ana sayfada Canlı Hedefler bölümü); `--deep`/kombinasyon
+doğrulamaları test edildi. Windows gerçek-makine doğrulaması (canlı proses listesi +
+dump) Windows kit turu ile yapılacaktır.
+
 ### Eklendi — Pattern Visual Scanner: desen tanımlama + görselleştirme + imza çıkarıcı
 
 **Neden:** web tarafındaki imza taraması yalnızca sabit 6 desenle gidiyor, kullanıcı kendi
